@@ -19,13 +19,11 @@ const META_COMMITTED: &str = "openraft:committed";
 const META_PURGED: &str = "openraft:purged";
 
 fn ser<T: serde::Serialize>(v: &T) -> Vec<u8> {
-    bincode::serde::encode_to_vec(v, bincode::config::standard()).expect("serialization failed")
+    bitcode::serialize(v).expect("serialization failed")
 }
 
 fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
-    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
-        .ok()
-        .map(|(v, _)| v)
+    bitcode::deserialize(bytes).ok()
 }
 
 fn to_storage_err<NID: openraft::NodeId>(e: crate::WalError) -> StorageError<NID> {
