@@ -82,6 +82,40 @@ pub(crate) fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
     entries
 }
 
+/// Reads a single entry by index from raw segment bytes.
+/// Returns None if not found or corrupted.
+pub(crate) fn find_entry_in_data(data: &[u8], target: u64) -> Option<Vec<u8>> {
+    let mut pos = 0;
+    while pos + ENTRY_HEADER_SIZE <= data.len() {
+        let crc_stored = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
+        let index = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
+        let plen =
+            u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes")) as usize;
+
+        pos += ENTRY_HEADER_SIZE;
+        if pos + plen > data.len() {
+            break;
+        }
+
+        let crc_computed = crc32c(&data[pos - 12..pos + plen]);
+        if crc_computed != crc_stored {
+            break;
+        }
+
+        if index == target {
+            return Some(data[pos..pos + plen].to_vec());
+        }
+        pos += plen;
+    }
+    None
+}
+
+/// Reads a single entry by index from a segment file.
+pub(crate) fn read_entry_from_segment(path: &std::path::Path, target: u64) -> Option<Vec<u8>> {
+    let data = std::fs::read(path).ok()?;
+    find_entry_in_data(&data, target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

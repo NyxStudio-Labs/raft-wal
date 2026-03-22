@@ -17,7 +17,7 @@ fn hp01_open_append_get() {
     let dir = tempfile::tempdir().unwrap();
     let mut wal = open(dir.path());
     wal.append(1, b"hello").unwrap();
-    assert_eq!(wal.get(1), Some(b"hello".as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some(b"hello".as_slice()));
     assert_eq!(wal.len(), 1);
     assert!(!wal.is_empty());
 }
@@ -29,7 +29,7 @@ fn hp02_append_batch_borrowed() {
     wal.append_batch(&[(1, b"a" as &[u8]), (2, b"b"), (3, b"c")])
         .unwrap();
     assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(2), Some(b"b".as_slice()));
+    assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn hp03_append_batch_owned() {
     let mut wal = open(dir.path());
     let entries = vec![(1u64, vec![1u8, 2]), (2, vec![3, 4])];
     wal.append_batch(&entries).unwrap();
-    assert_eq!(wal.get(1), Some([1u8, 2].as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some([1u8, 2].as_slice()));
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn hp07_recovery_after_clean_shutdown() {
     {
         let wal = open(&path);
         assert_eq!(wal.len(), 2);
-        assert_eq!(wal.get(1), Some(b"a".as_slice()));
-        assert_eq!(wal.get(2), Some(b"b".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"a".as_slice()));
+        assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
     }
 }
 
@@ -165,7 +165,7 @@ fn hp12_compact_recovery() {
         let wal = open(&path);
         assert_eq!(wal.len(), 2);
         assert_eq!(wal.first_index(), Some(4));
-        assert_eq!(wal.get(4), Some(b"e4".as_slice()));
+        assert_eq!(wal.get(4).as_deref(), Some(b"e4".as_slice()));
     }
 }
 
@@ -229,8 +229,8 @@ fn hp15_segment_rotation_recovery() {
     {
         let wal = open(&path);
         assert_eq!(wal.len(), 100);
-        assert_eq!(wal.get(1), Some(b"e1".as_slice()));
-        assert_eq!(wal.get(100), Some(b"e100".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"e1".as_slice()));
+        assert_eq!(wal.get(100).as_deref(), Some(b"e100".as_slice()));
     }
 }
 
@@ -245,7 +245,7 @@ fn hp16_flush_persists() {
     }
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1), Some(b"buffered".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"buffered".as_slice()));
     }
 }
 
@@ -260,7 +260,7 @@ fn hp17_sync_persists() {
     }
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1), Some(b"durable".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"durable".as_slice()));
     }
 }
 
@@ -290,7 +290,7 @@ fn hp19_append_after_compact() {
     wal.append(6, b"new").unwrap();
     assert_eq!(wal.len(), 3);
     assert_eq!(wal.first_index(), Some(4));
-    assert_eq!(wal.get(6), Some(b"new".as_slice()));
+    assert_eq!(wal.get(6).as_deref(), Some(b"new".as_slice()));
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn hp20_append_after_truncate() {
     wal.truncate(3).unwrap();
     wal.append(3, b"new").unwrap();
     assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(3), Some(b"new".as_slice()));
+    assert_eq!(wal.get(3).as_deref(), Some(b"new".as_slice()));
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn hp21_large_entry() {
     }
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1).unwrap(), big.as_slice());
+        assert_eq!(wal.get(1).unwrap().as_ref(), big.as_slice());
     }
 }
 
@@ -351,7 +351,7 @@ fn hp23_batch_recovery() {
     {
         let wal = open(&path);
         assert_eq!(wal.len(), 3);
-        assert_eq!(wal.get(2), Some(b"b".as_slice()));
+        assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
     }
 }
 
@@ -515,7 +515,7 @@ fn rq09_corrupt_crc_recovery() {
     {
         let wal = open(&path);
         // Only first entry should survive (CRC check stops at corruption)
-        assert_eq!(wal.get(1), Some(b"good".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
         assert!(wal.get(2).is_none());
         assert!(wal.get(3).is_none());
     }
@@ -538,7 +538,7 @@ fn rq10_partial_entry_at_tail() {
     fs::write(last_seg, truncated).unwrap();
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1), Some(b"complete".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"complete".as_slice()));
         // Second entry may or may not survive depending on how much was cut
         assert_eq!(wal.len(), 1);
     }
@@ -556,7 +556,7 @@ fn rq11_empty_segment_file() {
     fs::write(path.join("99999999999999999999.seg"), b"").unwrap();
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1), Some(b"data".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"data".as_slice()));
     }
 }
 
@@ -575,7 +575,7 @@ fn rq12_corrupt_meta_file() {
         let wal = open(&path);
         // Meta should be empty (corrupt file ignored), entries still OK
         assert!(wal.get_meta("key").is_none());
-        assert_eq!(wal.get(1), Some(b"data".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"data".as_slice()));
     }
 }
 
@@ -592,7 +592,7 @@ fn rq13_zero_length_entry() {
         let wal = open(&path);
         // Zero-length entry: our WAL uses empty vec as "no entry" sentinel,
         // so get(1) returns None but get(2) works
-        assert_eq!(wal.get(2), Some(b"not-empty".as_slice()));
+        assert_eq!(wal.get(2).as_deref(), Some(b"not-empty".as_slice()));
     }
 }
 
@@ -727,8 +727,8 @@ fn rq22_append_non_sequential() {
     let mut wal = open(dir.path());
     wal.append(1, b"a").unwrap();
     wal.append(5, b"b").unwrap(); // gap: 2,3,4 missing
-    assert_eq!(wal.get(1), Some(b"a".as_slice()));
-    assert_eq!(wal.get(5), Some(b"b".as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some(b"a".as_slice()));
+    assert_eq!(wal.get(5).as_deref(), Some(b"b".as_slice()));
     assert!(wal.get(2).is_none());
     assert!(wal.get(3).is_none());
     assert!(wal.get(4).is_none());
@@ -747,11 +747,11 @@ fn rq23_compact_all_then_append() {
         assert!(wal.is_empty());
         wal.append(6, b"after").unwrap();
         assert_eq!(wal.len(), 1);
-        assert_eq!(wal.get(6), Some(b"after".as_slice()));
+        assert_eq!(wal.get(6).as_deref(), Some(b"after".as_slice()));
     }
     {
         let wal = open(&path);
-        assert_eq!(wal.get(6), Some(b"after".as_slice()));
+        assert_eq!(wal.get(6).as_deref(), Some(b"after".as_slice()));
     }
 }
 
@@ -768,11 +768,11 @@ fn rq24_truncate_all_then_append() {
         assert!(wal.is_empty());
         wal.append(1, b"fresh").unwrap();
         assert_eq!(wal.len(), 1);
-        assert_eq!(wal.get(1), Some(b"fresh".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"fresh".as_slice()));
     }
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1), Some(b"fresh".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"fresh".as_slice()));
     }
 }
 
@@ -782,6 +782,93 @@ fn rq25_error_source_chain() {
     let err = WalError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
     assert!(std::error::Error::source(&err).is_some());
     assert!(err.to_string().contains("gone"));
+}
+
+// ========================================================================
+// Cache eviction tests
+// ========================================================================
+
+#[test]
+fn cache_eviction_basic() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(200); // small segments so sealed entries exist
+    wal.set_max_cache_entries(10);
+
+    for i in 1..=50 {
+        wal.append(i, format!("e{i}").as_bytes()).unwrap();
+    }
+
+    // Recent entries are in cache
+    assert_eq!(wal.get_cached(50), Some(b"e50".as_slice()));
+
+    // Old entries in sealed segments are evicted from memory
+    assert!(wal.get_cached(1).is_none());
+
+    // But get() reads from disk
+    assert_eq!(wal.get(1).as_deref(), Some(b"e1".as_slice()));
+    assert_eq!(wal.get(5).as_deref(), Some(b"e5".as_slice()));
+
+    // All 50 entries still exist
+    assert_eq!(wal.len(), 50);
+}
+
+#[test]
+fn cache_eviction_reduces_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+
+    for i in 1..=1000 {
+        wal.append(i, &[0u8; 256]).unwrap();
+    }
+    let mem_all = wal.estimated_memory();
+
+    wal.set_max_cache_entries(100);
+    let mem_limited = wal.estimated_memory();
+
+    assert!(
+        mem_limited < mem_all / 2,
+        "memory should decrease significantly: {mem_all} -> {mem_limited}"
+    );
+}
+
+#[test]
+fn cache_eviction_with_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    {
+        let mut wal = open(&path);
+        wal.set_max_cache_entries(5);
+        for i in 1..=20 {
+            wal.append(i, format!("e{i}").as_bytes()).unwrap();
+        }
+    }
+    {
+        let wal = open(&path);
+        // Recovery loads all entries into memory (no eviction limit persisted)
+        assert_eq!(wal.len(), 20);
+        assert_eq!(wal.get(1).as_deref(), Some(b"e1".as_slice()));
+        assert_eq!(wal.get(20).as_deref(), Some(b"e20".as_slice()));
+    }
+}
+
+#[test]
+fn cache_eviction_disk_fallback_after_segment_rotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(200);
+    wal.set_max_cache_entries(10);
+
+    for i in 1..=50 {
+        wal.append(i, format!("e{i}").as_bytes()).unwrap();
+    }
+
+    // Old entries evicted from memory but still on sealed segments
+    assert!(wal.get_cached(1).is_none());
+    assert_eq!(wal.get(1).as_deref(), Some(b"e1".as_slice()));
+
+    // Recent entries in cache
+    assert!(wal.get_cached(50).is_some());
 }
 
 // ========================================================================

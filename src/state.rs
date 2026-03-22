@@ -7,7 +7,12 @@ use crate::Entry;
 pub(crate) struct LogState {
     pub entries: VecDeque<Vec<u8>>,
     pub base_index: u64,
+    /// Index of the first entry that's actually cached in memory.
+    /// Entries between base_index and cache_start_index are evicted
+    /// (empty Vec in the deque) but still on disk.
+    pub cache_start_index: u64,
     pub meta: BTreeMap<String, Vec<u8>>,
+    pub max_cache_entries: usize,
 }
 
 impl LogState {
@@ -15,7 +20,9 @@ impl LogState {
         Self {
             entries: VecDeque::new(),
             base_index: 0,
+            cache_start_index: 0,
             meta: BTreeMap::new(),
+            max_cache_entries: usize::MAX,
         }
     }
 
@@ -23,6 +30,7 @@ impl LogState {
     pub fn insert(&mut self, index: u64, entry: &[u8]) {
         if self.entries.is_empty() {
             self.base_index = index;
+            self.cache_start_index = index;
         }
         let slot = (index - self.base_index) as usize;
         if slot >= self.entries.len() {
@@ -30,6 +38,43 @@ impl LogState {
         }
         self.entries[slot] = entry.to_vec();
     }
+
+    /// Evicts oldest cached entries to stay within max_cache_entries.
+    /// Evicted entries are replaced with empty Vecs (still on disk).
+    /// `protect_from` is the first index of the active segment — entries
+    /// at or after this index are never evicted (they may not be flushed yet).
+    pub fn evict_if_needed_until(&mut self, protect_from: u64) {
+        if self.max_cache_entries == usize::MAX {
+            return;
+        }
+        let cached = self.entries.len();
+        if cached <= self.max_cache_entries {
+            return;
+        }
+        let to_evict = cached - self.max_cache_entries;
+        for i in 0..to_evict {
+            let abs_idx = self.base_index + i as u64;
+            if abs_idx >= protect_from {
+                break; // don't evict active segment entries
+            }
+            if abs_idx >= self.cache_start_index {
+                let slot = (abs_idx - self.base_index) as usize;
+                if slot < self.entries.len() {
+                    self.entries[slot] = Vec::new();
+                }
+            }
+        }
+        let evicted_up_to = (self.base_index + to_evict as u64).min(protect_from);
+        if evicted_up_to > self.cache_start_index {
+            self.cache_start_index = evicted_up_to;
+        }
+    }
+
+    /// Simple eviction without protection (used when all data is flushed).
+    pub fn evict_if_needed(&mut self) {
+        self.evict_if_needed_until(u64::MAX);
+    }
+
 
     pub fn get(&self, index: u64) -> Option<&[u8]> {
         if index < self.base_index {

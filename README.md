@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
 [![CI](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml/badge.svg)](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
-[![tests](https://img.shields.io/badge/tests-128%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
+[![tests](https://img.shields.io/badge/tests-132%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
 [![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
 
 A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
@@ -150,7 +150,7 @@ cargo bench --bench wal_async --features tokio
 
 ## Design
 
-- **In-memory index**: `VecDeque<Vec<u8>>` with a base offset — O(1) append and lookup. All entries are held in memory; call `compact()` periodically after snapshots to free memory. Use `estimated_memory()` to monitor usage.
+- **Memory-bounded cache**: Recent entries are kept in a `VecDeque` (O(1) append/lookup). Older entries are evicted from memory but remain on disk. `get()` transparently falls back to disk reads for evicted entries (`Cow::Borrowed` for cache hits, `Cow::Owned` for disk). Use `set_max_cache_entries()` to limit memory. `get_cached()` provides a zero-copy fast path for in-memory entries only.
 - **Segment files**: the log is split into segment files (`{index}.seg`). When the active segment exceeds `max_segment_size` (default 64 MB), it is sealed and a new segment begins. `compact()` deletes old segments with a file remove — no rewrite needed.
 - **Entry format**: `[u32 crc32c LE][u64 index LE][u32 payload_len LE][payload]` — 16-byte header per entry
 - **Buffered writes**: 64 KB `BufWriter` (sync) or userspace buffer (async) — syscalls only when the buffer fills

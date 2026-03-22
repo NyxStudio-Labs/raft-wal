@@ -24,7 +24,7 @@ async fn async_hp01_open_append_get() {
     let dir = tempfile::tempdir().unwrap();
     let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
     wal.append(1, b"hello").await.unwrap();
-    assert_eq!(wal.get(1), Some(b"hello".as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some(b"hello".as_slice()));
     assert_eq!(wal.len(), 1);
 }
 
@@ -36,7 +36,7 @@ async fn async_hp02_append_batch_borrowed() {
         .await
         .unwrap();
     assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(2), Some(b"b".as_slice()));
+    assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
 }
 
 #[tokio::test]
@@ -45,7 +45,7 @@ async fn async_hp03_append_batch_owned() {
     let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
     let entries = vec![(1u64, vec![1u8, 2]), (2, vec![3, 4])];
     wal.append_batch(&entries).await.unwrap();
-    assert_eq!(wal.get(1), Some([1u8, 2].as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some([1u8, 2].as_slice()));
 }
 
 #[tokio::test]
@@ -97,7 +97,7 @@ async fn async_hp07_recovery() {
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
         assert_eq!(wal.len(), 2);
-        assert_eq!(wal.get(2), Some(b"b".as_slice()));
+        assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
     }
 }
 
@@ -158,7 +158,7 @@ async fn async_hp11_compact_recovery() {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
         assert_eq!(wal.len(), 2);
         assert_eq!(wal.first_index(), Some(4));
-        assert_eq!(wal.get(4), Some(b"e4".as_slice()));
+        assert_eq!(wal.get(4).as_deref(), Some(b"e4".as_slice()));
     }
 }
 
@@ -173,7 +173,7 @@ async fn async_hp12_flush() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1), Some(b"buffered".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"buffered".as_slice()));
     }
 }
 
@@ -188,7 +188,7 @@ async fn async_hp13_sync() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1), Some(b"durable".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"durable".as_slice()));
     }
 }
 
@@ -214,7 +214,7 @@ async fn async_hp15_close() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1), Some(b"closed".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"closed".as_slice()));
     }
 }
 
@@ -228,7 +228,7 @@ async fn async_hp16_append_after_compact() {
     wal.compact(3).await.unwrap();
     wal.append(6, b"new").await.unwrap();
     assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(6), Some(b"new".as_slice()));
+    assert_eq!(wal.get(6).as_deref(), Some(b"new".as_slice()));
 }
 
 #[tokio::test]
@@ -240,7 +240,7 @@ async fn async_hp17_append_after_truncate() {
     }
     wal.truncate(3).await.unwrap();
     wal.append(3, b"new").await.unwrap();
-    assert_eq!(wal.get(3), Some(b"new".as_slice()));
+    assert_eq!(wal.get(3).as_deref(), Some(b"new".as_slice()));
 }
 
 #[tokio::test]
@@ -255,7 +255,7 @@ async fn async_hp18_large_entry() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1).unwrap(), big.as_slice());
+        assert_eq!(wal.get(1).unwrap().as_ref(), big.as_slice());
     }
 }
 
@@ -352,7 +352,7 @@ async fn async_rq07_corrupt_recovery() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1), Some(b"good".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
         assert!(wal.get(2).is_none());
     }
 }
@@ -391,7 +391,7 @@ async fn async_rq10_compact_all_then_append() {
     wal.compact(5).await.unwrap();
     assert!(wal.is_empty());
     wal.append(6, b"after").await.unwrap();
-    assert_eq!(wal.get(6), Some(b"after".as_slice()));
+    assert_eq!(wal.get(6).as_deref(), Some(b"after".as_slice()));
 }
 
 #[tokio::test]
@@ -404,7 +404,7 @@ async fn async_rq11_truncate_all_then_append() {
     wal.truncate(1).await.unwrap();
     assert!(wal.is_empty());
     wal.append(1, b"fresh").await.unwrap();
-    assert_eq!(wal.get(1), Some(b"fresh".as_slice()));
+    assert_eq!(wal.get(1).as_deref(), Some(b"fresh".as_slice()));
 }
 
 #[tokio::test]

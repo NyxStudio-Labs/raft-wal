@@ -45,14 +45,15 @@ pub mod impls;
 #[cfg(feature = "openraft-storage")]
 pub use impls::openraft::OpenRaftLogStorage;
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 
 use segment::{
-    list_segments, parse_entries, segment_path, serialize_entry, SegmentMeta,
-    DEFAULT_MAX_SEGMENT_SIZE,
+    list_segments, parse_entries, read_entry_from_segment, segment_path, serialize_entry,
+    SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE,
 };
 use state::LogState;
 
@@ -233,6 +234,8 @@ impl RaftWal {
         self.active_bytes += self.write_buf.len();
         self.active_meta.last_index = index;
         self.state.insert(index, entry);
+        self.state
+            .evict_if_needed_until(self.active_meta.first_index);
 
         if self.active_bytes >= self.max_segment_size {
             self.rotate_segment()?;
@@ -256,6 +259,8 @@ impl RaftWal {
             self.active_meta.last_index = *index;
             self.state.insert(*index, entry.as_ref());
         }
+        self.state
+            .evict_if_needed_until(self.active_meta.first_index);
 
         if self.active_bytes >= self.max_segment_size {
             self.rotate_segment()?;
@@ -284,7 +289,21 @@ impl RaftWal {
     }
 
     /// Returns the entry at the given index.
-    pub fn get(&self, index: u64) -> Option<&[u8]> {
+    ///
+    /// Returns `Cow::Borrowed` for cached (in-memory) entries and
+    /// `Cow::Owned` for evicted entries read from disk.
+    pub fn get(&self, index: u64) -> Option<Cow<'_, [u8]>> {
+        // Fast path: check in-memory cache
+        if let Some(data) = self.state.get(index) {
+            return Some(Cow::Borrowed(data));
+        }
+        // Slow path: read from disk segment
+        self.read_from_disk(index).map(Cow::Owned)
+    }
+
+    /// Returns the entry from memory only (no disk fallback).
+    /// This is the zero-copy fast path (~1ns).
+    pub fn get_cached(&self, index: u64) -> Option<&[u8]> {
         self.state.get(index)
     }
 
@@ -311,6 +330,16 @@ impl RaftWal {
     /// Estimated memory usage of in-memory entries and metadata in bytes.
     pub fn estimated_memory(&self) -> usize {
         self.state.estimated_memory()
+    }
+
+    /// Sets the maximum number of entries to keep in memory.
+    ///
+    /// When the cache exceeds this limit, oldest entries are evicted from
+    /// memory but remain on disk. `get()` for evicted entries reads from
+    /// the segment file (slower). Default is `usize::MAX` (no eviction).
+    pub fn set_max_cache_entries(&mut self, max: usize) {
+        self.state.max_cache_entries = max;
+        self.state.evict_if_needed();
     }
 
     /// Sets the maximum segment file size in bytes (default 64 MB).
@@ -400,6 +429,20 @@ impl RaftWal {
         self.active_writer.flush()?;
         self.active_writer.get_ref().sync_all()?;
         Ok(())
+    }
+
+    fn read_from_disk(&self, index: u64) -> Option<Vec<u8>> {
+        // Check sealed segments
+        for seg in &self.sealed {
+            if index >= seg.first_index && index <= seg.last_index {
+                return read_entry_from_segment(&seg.path, index);
+            }
+        }
+        // Check active segment
+        if index >= self.active_meta.first_index && index <= self.active_meta.last_index {
+            return read_entry_from_segment(&self.active_meta.path, index);
+        }
+        None
     }
 
     fn rotate_segment(&mut self) -> Result<()> {
@@ -523,7 +566,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut wal = RaftWal::open(dir.path()).expect("open");
         wal.append(1, b"hello").expect("append");
-        assert_eq!(wal.get(1), Some(b"hello".as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some(b"hello".as_slice()));
         assert_eq!(wal.len(), 1);
     }
 
@@ -579,7 +622,7 @@ mod tests {
         {
             let wal = RaftWal::open(&path).expect("reopen");
             assert_eq!(wal.len(), 2);
-            assert_eq!(wal.get(2), Some(b"b".as_slice()));
+            assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
             assert_eq!(wal.get_meta("vote"), Some(b"v1".as_slice()));
         }
     }
@@ -615,7 +658,7 @@ mod tests {
         wal.append_batch(&[(1, b"a" as &[u8]), (2, b"b"), (3, b"c")])
             .expect("batch");
         assert_eq!(wal.len(), 3);
-        assert_eq!(wal.get(2), Some(b"b".as_slice()));
+        assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
     }
 
     #[test]
@@ -625,7 +668,7 @@ mod tests {
         let entries = vec![(1u64, vec![1u8, 2, 3]), (2, vec![4, 5, 6])];
         wal.append_batch(&entries).expect("batch owned");
         assert_eq!(wal.len(), 2);
-        assert_eq!(wal.get(1), Some([1u8, 2, 3].as_slice()));
+        assert_eq!(wal.get(1).as_deref(), Some([1u8, 2, 3].as_slice()));
     }
 
     #[test]
@@ -663,7 +706,7 @@ mod tests {
             let wal = RaftWal::open(&path).expect("reopen");
             assert_eq!(wal.len(), 2);
             assert_eq!(wal.first_index(), Some(4));
-            assert_eq!(wal.get(4), Some(b"e4".as_slice()));
+            assert_eq!(wal.get(4).as_deref(), Some(b"e4".as_slice()));
         }
     }
 
@@ -696,7 +739,7 @@ mod tests {
         wal.compact(3).expect("compact");
         wal.append(6, b"new").expect("append after compact");
         assert_eq!(wal.len(), 3);
-        assert_eq!(wal.get(6), Some(b"new".as_slice()));
+        assert_eq!(wal.get(6).as_deref(), Some(b"new".as_slice()));
         assert_eq!(wal.first_index(), Some(4));
     }
 
@@ -710,7 +753,7 @@ mod tests {
         wal.truncate(3).expect("truncate");
         wal.append(3, b"new").expect("append replacement");
         assert_eq!(wal.len(), 3);
-        assert_eq!(wal.get(3), Some(b"new".as_slice()));
+        assert_eq!(wal.get(3).as_deref(), Some(b"new".as_slice()));
     }
 
     #[test]
@@ -806,7 +849,7 @@ mod tests {
         }
         {
             let wal = RaftWal::open(&path).expect("reopen");
-            assert_eq!(wal.get(1).expect("get"), big.as_slice());
+            assert_eq!(wal.get(1).expect("get").as_ref(), big.as_slice());
         }
     }
 
@@ -821,7 +864,7 @@ mod tests {
         }
         {
             let wal = RaftWal::open(&path).expect("reopen");
-            assert_eq!(wal.get(1), Some(b"buffered".as_slice()));
+            assert_eq!(wal.get(1).as_deref(), Some(b"buffered".as_slice()));
         }
     }
 
@@ -836,7 +879,7 @@ mod tests {
         }
         {
             let wal = RaftWal::open(&path).expect("reopen");
-            assert_eq!(wal.get(1), Some(b"durable".as_slice()));
+            assert_eq!(wal.get(1).as_deref(), Some(b"durable".as_slice()));
         }
     }
 
@@ -905,8 +948,8 @@ mod tests {
         {
             let wal = RaftWal::open(&path).expect("reopen");
             assert_eq!(wal.len(), 100);
-            assert_eq!(wal.get(1), Some(b"e1".as_slice()));
-            assert_eq!(wal.get(100), Some(b"e100".as_slice()));
+            assert_eq!(wal.get(1).as_deref(), Some(b"e1".as_slice()));
+            assert_eq!(wal.get(100).as_deref(), Some(b"e100".as_slice()));
         }
     }
 
