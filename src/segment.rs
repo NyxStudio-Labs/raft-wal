@@ -39,7 +39,10 @@ pub(crate) fn serialize_entry(buf: &mut Vec<u8>, index: u64, entry: &[u8]) {
     let len_bytes = (entry.len() as u32).to_le_bytes();
 
     // CRC covers: index + payload_len + payload (incremental, no alloc)
-    let crc = crc32c_append(crc32c_append(crc32c_append(0, &idx_bytes), &len_bytes), entry);
+    let crc = crc32c_append(
+        crc32c_append(crc32c_append(0, &idx_bytes), &len_bytes),
+        entry,
+    );
 
     buf.extend_from_slice(&crc.to_le_bytes());
     buf.extend_from_slice(&idx_bytes);
@@ -54,13 +57,10 @@ pub(crate) fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
     let mut pos = 0;
 
     while pos + ENTRY_HEADER_SIZE <= data.len() {
-        let crc_stored =
-            u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
-        let index =
-            u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
+        let crc_stored = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
+        let index = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
         let plen =
-            u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes"))
-                as usize;
+            u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes")) as usize;
 
         pos += ENTRY_HEADER_SIZE;
         if pos + plen > data.len() {
@@ -81,7 +81,6 @@ pub(crate) fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
 
     entries
 }
-
 
 #[cfg(test)]
 mod tests {

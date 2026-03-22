@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/raft-wal.svg)](https://crates.io/crates/raft-wal)
 [![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
 [![CI](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml/badge.svg)](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml)
-[![coverage](https://img.shields.io/badge/coverage-86%25-green)](https://github.com/NyxStudio-Labs/raft-wal)
+[![coverage](https://img.shields.io/badge/coverage-87%25-green)](https://github.com/NyxStudio-Labs/raft-wal)
 [![tests](https://img.shields.io/badge/tests-80%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
 [![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
 
@@ -94,7 +94,7 @@ use raft_wal::OpenRaftLogStorage;
 let storage = OpenRaftLogStorage::<MyTypeConfig>::open("./raft-data").await?;
 ```
 
-`C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement `bitcode::Encode + bitcode::DecodeOwned`.
+`C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement `serde::Serialize + serde::DeserializeOwned`.
 
 ## Durability
 
@@ -115,19 +115,36 @@ Each entry on disk is prefixed with a CRC32C checksum covering the index, payloa
 
 ## Benchmarks
 
-Measured on Linux with 128-byte entries:
+Measured on Linux with 128-byte entries. Lower is better.
+
+### vs alternatives
+
+| Operation | raft-wal | sled | redb | rocksdb |
+|---|---|---|---|---|
+| **append** | **444 ns** | 10.8 µs | 1.96 ms | 1.26 µs |
+| **get** | **1.1 ns** | 188 ns | 435 ns | 220 ns |
+| **recovery** (10k) | **1.3 ms** | 4.97 ms | 2.17 ms | 8.84 ms |
+
+| vs | append | get | recovery |
+|---|---|---|---|
+| sled | **24x faster** | **171x faster** | **3.8x faster** |
+| redb | **4,400x faster** | **395x faster** | **1.7x faster** |
+| rocksdb | **2.8x faster** | **200x faster** | **6.9x faster** |
+
+### raft-wal detailed
 
 | Operation | Latency |
 |---|---|
-| `append` | ~210 ns |
+| `append` | ~444 ns |
 | `append_batch` (10 entries) | ~2.9 µs |
-| `get` | ~1 ns |
+| `get` | ~1.1 ns |
 | `read_range` (100 entries) | ~3.2 µs |
-| `recovery` (10k entries, 1 segment) | ~1.2 ms |
+| `recovery` (10k entries, 1 segment) | ~1.3 ms |
 | `recovery` (10k entries, multi-segment) | ~2.0 ms |
 
 ```sh
-cargo bench
+cargo bench --bench comparison  # vs sled, redb, rocksdb
+cargo bench --bench wal         # raft-wal detailed
 cargo bench --bench wal_async --features tokio
 ```
 

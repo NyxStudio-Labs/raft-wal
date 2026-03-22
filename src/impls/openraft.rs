@@ -17,12 +17,14 @@ const META_VOTE: &str = "openraft:vote";
 const META_COMMITTED: &str = "openraft:committed";
 const META_PURGED: &str = "openraft:purged";
 
-fn ser<T: bitcode::Encode>(v: &T) -> Vec<u8> {
-    bitcode::encode(v)
+fn ser<T: serde::Serialize>(v: &T) -> Vec<u8> {
+    bincode::serde::encode_to_vec(v, bincode::config::standard()).expect("serialization failed")
 }
 
-fn de<T: bitcode::DecodeOwned>(bytes: &[u8]) -> Option<T> {
-    bitcode::decode::<T>(bytes).ok()
+fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .ok()
+        .map(|(v, _)| v)
 }
 
 fn io_err(e: crate::WalError) -> io::Error {
@@ -34,11 +36,11 @@ fn io_err(e: crate::WalError) -> io::Error {
 /// A wrapper around [`AsyncRaftWal`] that implements openraft's
 /// [`RaftLogStorage`] and [`RaftLogReader`] traits.
 ///
-/// Entries are stored as bitcode-serialized bytes. Vote, committed log ID,
+/// Entries are stored as bincode-serialized bytes. Vote, committed log ID,
 /// and purged log ID are persisted via WAL metadata (always fsynced).
 ///
 /// `C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement
-/// `bitcode::Encode + bitcode::DecodeOwned`.
+/// `serde::Serialize + serde::DeserializeOwned`.
 pub struct OpenRaftLogStorage<C: RaftTypeConfig> {
     wal: AsyncRaftWal,
     _phantom: std::marker::PhantomData<C>,
@@ -66,13 +68,10 @@ impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
 
 impl<C: RaftTypeConfig> RaftLogReader<C> for OpenRaftLogStorage<C>
 where
-    C::Entry: bitcode::Encode + bitcode::DecodeOwned,
-    VoteOf<C>: bitcode::Encode + bitcode::DecodeOwned,
+    C::Entry: serde::Serialize + serde::de::DeserializeOwned,
+    VoteOf<C>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    async fn try_get_log_entries<RB>(
-        &mut self,
-        range: RB,
-    ) -> Result<Vec<C::Entry>, io::Error>
+    async fn try_get_log_entries<RB>(&mut self, range: RB) -> Result<Vec<C::Entry>, io::Error>
     where
         RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
     {
@@ -91,9 +90,9 @@ where
 
 impl<C: RaftTypeConfig> RaftLogStorage<C> for OpenRaftLogStorage<C>
 where
-    C::Entry: bitcode::Encode + bitcode::DecodeOwned,
-    VoteOf<C>: bitcode::Encode + bitcode::DecodeOwned,
-    LogIdOf<C>: bitcode::Encode + bitcode::DecodeOwned + Copy,
+    C::Entry: serde::Serialize + serde::de::DeserializeOwned,
+    VoteOf<C>: serde::Serialize + serde::de::DeserializeOwned,
+    LogIdOf<C>: serde::Serialize + serde::de::DeserializeOwned + Copy,
 {
     type LogReader = Self;
 
@@ -127,10 +126,7 @@ where
             .map_err(io_err)
     }
 
-    async fn save_committed(
-        &mut self,
-        committed: Option<LogIdOf<C>>,
-    ) -> Result<(), io::Error> {
+    async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> Result<(), io::Error> {
         match committed {
             Some(log_id) => self
                 .wal
@@ -145,11 +141,7 @@ where
         Ok(self.wal.get_meta(META_COMMITTED).and_then(de))
     }
 
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: IOFlushed<C>,
-    ) -> Result<(), io::Error>
+    async fn append<I>(&mut self, entries: I, callback: IOFlushed<C>) -> Result<(), io::Error>
     where
         I: IntoIterator<Item = C::Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
@@ -163,10 +155,7 @@ where
         Ok(())
     }
 
-    async fn truncate_after(
-        &mut self,
-        last_log_id: Option<LogIdOf<C>>,
-    ) -> Result<(), io::Error> {
+    async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<C>>) -> Result<(), io::Error> {
         match last_log_id {
             Some(log_id) => {
                 let index = log_id.index() + 1;

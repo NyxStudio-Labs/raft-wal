@@ -154,7 +154,11 @@ impl LogState {
             .iter()
             .map(|e| e.capacity() + std::mem::size_of::<Vec<u8>>())
             .sum::<usize>()
-            + self.meta.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+            + self
+                .meta
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
     }
 
     /// Parses metadata bytes.
@@ -172,8 +176,7 @@ impl LogState {
             if pos + 4 > data.len() {
                 return;
             }
-            let klen =
-                u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
+            let klen = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
             pos += 4;
             if pos + klen > data.len() {
                 return;
@@ -187,8 +190,7 @@ impl LogState {
             if pos + 4 > data.len() {
                 return;
             }
-            let vlen =
-                u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
+            let vlen = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
             pos += 4;
             if pos + vlen > data.len() {
                 return;

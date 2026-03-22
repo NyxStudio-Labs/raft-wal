@@ -146,35 +146,34 @@ impl RaftWal {
         let chunk_size = (seg_paths.len() + num_threads - 1) / num_threads.max(1);
 
         type SegResult = std::io::Result<(PathBuf, Vec<(u64, Vec<u8>)>)>;
-        let parsed: Vec<SegResult> =
-            std::thread::scope(|s| {
-                let handles: Vec<_> = seg_paths
-                    .chunks(chunk_size.max(1))
-                    .map(|chunk| {
-                        let chunk = chunk.to_vec();
-                        s.spawn(move || {
-                            let mut results = Vec::with_capacity(chunk.len());
-                            for path in chunk {
-                                let data = std::fs::read(&path)?;
-                                results.push((path, parse_entries(&data)));
-                            }
-                            Ok::<_, std::io::Error>(results)
-                        })
-                    })
-                    .collect();
-                let mut all = Vec::with_capacity(seg_paths.len());
-                for h in handles {
-                    match h.join().expect("segment reader panicked") {
-                        Ok(results) => {
-                            for r in results {
-                                all.push(Ok(r));
-                            }
+        let parsed: Vec<SegResult> = std::thread::scope(|s| {
+            let handles: Vec<_> = seg_paths
+                .chunks(chunk_size.max(1))
+                .map(|chunk| {
+                    let chunk = chunk.to_vec();
+                    s.spawn(move || {
+                        let mut results = Vec::with_capacity(chunk.len());
+                        for path in chunk {
+                            let data = std::fs::read(&path)?;
+                            results.push((path, parse_entries(&data)));
                         }
-                        Err(e) => all.push(Err(e)),
+                        Ok::<_, std::io::Error>(results)
+                    })
+                })
+                .collect();
+            let mut all = Vec::with_capacity(seg_paths.len());
+            for h in handles {
+                match h.join().expect("segment reader panicked") {
+                    Ok(results) => {
+                        for r in results {
+                            all.push(Ok(r));
+                        }
                     }
+                    Err(e) => all.push(Err(e)),
                 }
-                all
-            });
+            }
+            all
+        });
 
         let mut sealed = Vec::new();
         for result in parsed {
@@ -201,10 +200,7 @@ impl RaftWal {
         }
 
         // Determine active segment
-        let next_index = state
-            .last_index()
-            .map(|i| i + 1)
-            .unwrap_or(1);
+        let next_index = state.last_index().map(|i| i + 1).unwrap_or(1);
         let active_path = segment_path(dir, next_index);
         let active_file = std::fs::OpenOptions::new()
             .create(true)
@@ -467,13 +463,8 @@ impl RaftWal {
         std::fs::write(&tmp_path, &buf)?;
 
         // Close old active writer
-        let tmp_file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&tmp_path)?;
-        let old_writer = std::mem::replace(
-            &mut self.active_writer,
-            BufWriter::new(tmp_file),
-        );
+        let tmp_file = std::fs::OpenOptions::new().append(true).open(&tmp_path)?;
+        let old_writer = std::mem::replace(&mut self.active_writer, BufWriter::new(tmp_file));
         let _ = old_writer.into_inner();
 
         // Remove old active segment if different path
@@ -482,9 +473,7 @@ impl RaftWal {
         }
         std::fs::rename(&tmp_path, &new_path)?;
 
-        let file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&new_path)?;
+        let file = std::fs::OpenOptions::new().append(true).open(&new_path)?;
         self.active_writer = BufWriter::with_capacity(64 * 1024, file);
         self.active_bytes = buf.len();
 
@@ -499,7 +488,10 @@ impl RaftWal {
         self.active_meta = SegmentMeta {
             path: new_path,
             first_index,
-            last_index: self.state.last_index().unwrap_or(first_index.saturating_sub(1)),
+            last_index: self
+                .state
+                .last_index()
+                .unwrap_or(first_index.saturating_sub(1)),
         };
         Ok(())
     }

@@ -11,18 +11,22 @@ readme = "README.md"
 
 [features]
 tokio = ["dep:tokio"]
-openraft-storage = ["dep:openraft", "dep:bitcode", "tokio"]
+openraft-storage = ["dep:openraft", "dep:serde", "dep:bincode", "tokio"]
 
 [dependencies]
-crc32c = "0.6.8"
-tokio = { version = "1.50.0", features = ["fs", "io-util", "rt"], optional = true }
-openraft = { version = "0.10.0-alpha.17", optional = true }
-bitcode = { version = "0.6", optional = true }
+crc32c = "0.6"
+tokio = { version = "1", features = ["fs", "io-util", "rt"], optional = true }
+openraft = { version = "0.10.0-alpha.17", features = ["serde"], optional = true }
+serde = { version = "1", optional = true }
+bincode = { version = "2", features = ["serde"], optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.8.2", features = ["html_reports"] }
-tempfile = "3.27.0"
-tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "fs", "io-util"] }
+criterion = { version = "0.8", features = ["html_reports"] }
+redb = "3"
+rocksdb = "0.24"
+sled = "0.34"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "io-util"] }
 
 [[bench]]
 name = "wal"
@@ -32,3 +36,7 @@ harness = false
 name = "wal_async"
 harness = false
 required-features = ["tokio"]
+
+[[bench]]
+name = "comparison"
+harness = false

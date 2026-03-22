@@ -366,7 +366,10 @@ fn hp24_compact_deletes_segment_files() {
     let before = seg_count(dir.path());
     wal.compact(80).unwrap();
     let after = seg_count(dir.path());
-    assert!(after < before, "segments not deleted: before={before} after={after}");
+    assert!(
+        after < before,
+        "segments not deleted: before={before} after={after}"
+    );
 }
 
 #[test]
@@ -711,7 +714,10 @@ fn rq21_multi_segment_one_corrupted() {
                 missing += 1;
             }
         }
-        assert!(missing > 0, "corruption should cause at least one missing entry");
+        assert!(
+            missing > 0,
+            "corruption should cause at least one missing entry"
+        );
     }
 }
 
