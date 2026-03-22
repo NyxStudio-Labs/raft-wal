@@ -1,5 +1,9 @@
 # raft-wal
 
+[![crates.io](https://img.shields.io/crates/v/raft-wal.svg)](https://crates.io/crates/raft-wal)
+[![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
+[![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
+
 A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
 
 General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Raft log storage. raft-wal focuses on four operations: **append**, **range read**, **truncate**, and **metadata** — nothing else.
