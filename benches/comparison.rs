@@ -28,6 +28,20 @@ fn raft_wal_append(c: &mut Criterion) {
     });
 }
 
+fn raft_wal_append_sync(c: &mut Criterion) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = raft_wal::RaftWal::open(dir.path()).unwrap();
+    let mut idx = 1u64;
+
+    c.bench_function("append+sync/raft-wal", |b| {
+        b.iter(|| {
+            wal.append(idx, black_box(&PAYLOAD)).unwrap();
+            wal.sync().unwrap();
+            idx += 1;
+        })
+    });
+}
+
 fn raft_wal_get(c: &mut Criterion) {
     let dir = tempfile::tempdir().unwrap();
     let mut wal = raft_wal::RaftWal::open(dir.path()).unwrap();
@@ -243,6 +257,7 @@ fn rocksdb_recovery(c: &mut Criterion) {
 criterion_group!(
     benches,
     raft_wal_append,
+    raft_wal_append_sync,
     sled_append,
     redb_append,
     rocksdb_append,

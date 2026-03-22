@@ -117,30 +117,37 @@ Each entry on disk is prefixed with a CRC32C checksum covering the index, payloa
 
 Measured on Linux with 128-byte entries. Lower is better.
 
-### vs alternatives
+### vs alternatives (buffered, no fsync)
 
 | Operation | raft-wal | sled | redb | rocksdb |
 |---|---|---|---|---|
-| **append** | **176 ns** | 3.79 µs | 2.47 ms | 1.22 µs |
-| **get** | **1.5 ns** | 195 ns | 457 ns | 342 ns |
-| **recovery** (10k) | **1.91 ms** | 6.08 ms | 8.96 ms | 24.8 ms |
+| **append** | **225 ns** | 3.69 µs | 2.22 ms | 1.19 µs |
+| **get** | **1.5 ns** | 196 ns | 438 ns | 301 ns |
+| **recovery** (10k) | **1.59 ms** | 11.2 ms | 2.50 ms | 9.26 ms |
 
-| vs | append | get | recovery |
+> **Note:** `append` numbers above are **buffered without fsync**. sled and rocksdb
+> also buffer by default. redb fsyncs every transaction, so the comparison is not
+> apples-to-apples. See the durable append row below for a fair durability comparison.
+
+### append with fsync (durable write)
+
+| | raft-wal (`append` + `sync()`) | redb (per-txn fsync) | rocksdb (WAL fsync) |
 |---|---|---|---|
-| sled | **21x faster** | **130x faster** | **3.2x faster** |
-| redb | **14,000x faster** | **305x faster** | **4.7x faster** |
-| rocksdb | **6.9x faster** | **228x faster** | **13x faster** |
+| **latency** | ~1.01 ms | ~2.22 ms | ~1.19 µs* |
+
+\* rocksdb buffers WAL writes by default; its durable mode (`sync_wal`) is not benchmarked here.
 
 ### raft-wal detailed
 
 | Operation | Latency |
 |---|---|
-| `append` | ~211 ns |
-| `append_batch` (10 entries) | ~2.9 µs |
-| `get` | ~1.4 ns |
-| `read_range` (100 entries) | ~3.7 µs |
+| `append` (buffered) | ~223 ns |
+| `append` + `sync()` (durable) | ~1.01 ms |
+| `append_batch` (10 entries) | ~1.7 µs |
+| `get` (cache hit) | ~1.4 ns |
+| `read_range` (100 entries) | ~3.5 µs |
 | `recovery` (10k entries, 1 segment) | ~1.3 ms |
-| `recovery` (10k entries, multi-segment) | ~2.4 ms |
+| `recovery` (10k entries, multi-segment) | ~2.1 ms |
 
 ```sh
 cargo bench --bench comparison  # vs sled, redb, rocksdb
