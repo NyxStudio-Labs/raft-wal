@@ -1,28 +1,32 @@
 # raft-wal
 
-A minimal, zero-dependency append-only WAL (Write-Ahead Log) optimized for Raft consensus.
+A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
 
 General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Raft log storage. raft-wal focuses on four operations: **append**, **range read**, **truncate**, and **metadata** — nothing else.
 
 ## Features
 
-- **Fast** — ~380ns append (with CRC32C), ~1ns get (O(1) via `VecDeque`)
-- **Zero required dependencies** — only `tokio` as an optional feature
+- **Fast** — ~210ns append (with HW-accelerated CRC32C), ~1ns get (O(1) via `VecDeque`)
+- **Minimal dependencies** — only `crc32c` required; `tokio` and `openraft` are optional
 - **Sync & async** — `RaftWal` and `AsyncRaftWal` share the same optimized core
 - **Raft-correct durability** — metadata (term/vote) is always fsynced; log entries are buffered with opt-in `sync()`
 - **Integrity** — every entry is protected by a CRC32C checksum; corrupted or partial writes are detected on recovery
 - **Segment-based storage** — log is split into segment files (default 64 MB); `compact()` deletes old segments without rewriting
 - **Parallel recovery** — segment files are read and CRC-verified in parallel across CPU cores
+- **openraft integration** — optional `RaftLogStorage` trait implementation
 - **Cross-platform** — Linux, macOS, Windows
 
 ## Usage
 
 ```toml
 [dependencies]
-raft-wal = "0.1"
+raft-wal = "0.2"
 
 # For async support:
-# raft-wal = { version = "0.1", features = ["tokio"] }
+# raft-wal = { version = "0.2", features = ["tokio"] }
+
+# For openraft integration:
+# raft-wal = { version = "0.2", features = ["openraft-storage"] }
 ```
 
 ```rust
@@ -69,6 +73,22 @@ wal.set_meta("term", b"1").await.unwrap();
 wal.close().await.unwrap();
 ```
 
+### openraft Integration
+
+Enable `openraft-storage` to get `RaftLogStorage` + `RaftLogReader` implementations:
+
+```toml
+raft-wal = { version = "0.2", features = ["openraft-storage"] }
+```
+
+```rust,ignore
+use raft_wal::OpenRaftLogStorage;
+
+let storage = OpenRaftLogStorage::<MyTypeConfig>::open("./raft-data").await?;
+```
+
+`C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement `serde::Serialize + serde::Deserialize`.
+
 ## Durability
 
 | Operation | Behavior |
@@ -92,12 +112,12 @@ Measured on Linux with 128-byte entries:
 
 | Operation | Latency |
 |---|---|
-| `append` | ~380 ns |
-| `append_batch` (10 entries) | ~3.7 µs |
+| `append` | ~210 ns |
+| `append_batch` (10 entries) | ~2.9 µs |
 | `get` | ~1 ns |
-| `read_range` (100 entries) | ~3.3 µs |
-| `recovery` (10k entries, 1 segment) | ~3.1 ms |
-| `recovery` (10k entries, multi-segment) | ~2.3 ms |
+| `read_range` (100 entries) | ~3.2 µs |
+| `recovery` (10k entries, 1 segment) | ~1.2 ms |
+| `recovery` (10k entries, multi-segment) | ~2.0 ms |
 
 ```sh
 cargo bench
@@ -112,7 +132,7 @@ cargo bench --bench wal_async --features tokio
 - **Buffered writes**: 64 KB `BufWriter` (sync) or userspace buffer (async) — syscalls only when the buffer fills
 - **Parallel recovery**: segment files are read and CRC-verified concurrently using one thread per CPU core (`std::thread::scope`) or `tokio::spawn` (async)
 - **Atomic metadata**: `set_meta` writes to a temp file, fsyncs, then renames — crash-safe
-- **Zero external dependencies**: CRC32C uses a compile-time lookup table; meta serialization uses a simple length-prefixed binary format
+- **CRC32C**: hardware-accelerated via the `crc32c` crate (SSE4.2 on x86, ARM CRC on aarch64, software fallback elsewhere)
 
 ## Status
 

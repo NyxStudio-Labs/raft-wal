@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::crc32::{self, crc32c};
+use crc32c::{crc32c, crc32c_append};
 
 /// Entry wire format: `[u32 crc32c LE][u64 index LE][u32 payload_len LE][payload]`
 pub(crate) const ENTRY_HEADER_SIZE: usize = 4 + 8 + 4;
@@ -39,12 +39,7 @@ pub(crate) fn serialize_entry(buf: &mut Vec<u8>, index: u64, entry: &[u8]) {
     let len_bytes = (entry.len() as u32).to_le_bytes();
 
     // CRC covers: index + payload_len + payload (incremental, no alloc)
-    let crc = crc32::finalize(
-        crc32::update(
-            crc32::update(crc32::update(crc32::INIT, &idx_bytes), &len_bytes),
-            entry,
-        ),
-    );
+    let crc = crc32c_append(crc32c_append(crc32c_append(0, &idx_bytes), &len_bytes), entry);
 
     buf.extend_from_slice(&crc.to_le_bytes());
     buf.extend_from_slice(&idx_bytes);

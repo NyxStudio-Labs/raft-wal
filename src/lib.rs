@@ -1,14 +1,15 @@
 //! # raft-wal
 //!
-//! A minimal, zero-dependency append-only WAL (Write-Ahead Log) optimized
-//! for Raft consensus.
+//! A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
 //!
 //! - **Segment-based storage** — log is split into segment files; `compact()`
 //!   deletes old segments without rewriting.
-//! - **CRC32C checksums** — every entry is integrity-checked on recovery.
+//! - **CRC32C checksums** — HW-accelerated integrity checks on every entry.
 //! - **Raft-correct durability** — metadata (term/vote) is always fsynced;
 //!   log entries are buffered with opt-in [`RaftWal::sync`].
 //! - **Parallel recovery** — segments are read and verified concurrently.
+//! - **openraft integration** — enable `openraft-storage` feature for
+//!   [`RaftLogStorage`](openraft::storage::RaftLogStorage) implementation.
 //!
 //! ## Usage
 //!
@@ -31,7 +32,6 @@
 #![deny(missing_docs)]
 #![deny(clippy::unwrap_used)]
 
-pub(crate) mod crc32;
 pub(crate) mod segment;
 pub(crate) mod state;
 
@@ -39,6 +39,11 @@ pub(crate) mod state;
 mod tokio;
 #[cfg(feature = "tokio")]
 pub use self::tokio::AsyncRaftWal;
+
+pub mod impls;
+
+#[cfg(feature = "openraft-storage")]
+pub use impls::openraft::OpenRaftLogStorage;
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
