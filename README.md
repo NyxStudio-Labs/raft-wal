@@ -121,26 +121,26 @@ Measured on Linux with 128-byte entries. Lower is better.
 
 | Operation | raft-wal | sled | redb | rocksdb |
 |---|---|---|---|---|
-| **append** | **444 ns** | 10.8 µs | 1.96 ms | 1.26 µs |
-| **get** | **1.1 ns** | 188 ns | 435 ns | 220 ns |
-| **recovery** (10k) | **1.3 ms** | 4.97 ms | 2.17 ms | 8.84 ms |
+| **append** | **176 ns** | 3.79 µs | 2.47 ms | 1.22 µs |
+| **get** | **1.5 ns** | 195 ns | 457 ns | 342 ns |
+| **recovery** (10k) | **1.91 ms** | 6.08 ms | 8.96 ms | 24.8 ms |
 
 | vs | append | get | recovery |
 |---|---|---|---|
-| sled | **24x faster** | **171x faster** | **3.8x faster** |
-| redb | **4,400x faster** | **395x faster** | **1.7x faster** |
-| rocksdb | **2.8x faster** | **200x faster** | **6.9x faster** |
+| sled | **21x faster** | **130x faster** | **3.2x faster** |
+| redb | **14,000x faster** | **305x faster** | **4.7x faster** |
+| rocksdb | **6.9x faster** | **228x faster** | **13x faster** |
 
 ### raft-wal detailed
 
 | Operation | Latency |
 |---|---|
-| `append` | ~444 ns |
+| `append` | ~211 ns |
 | `append_batch` (10 entries) | ~2.9 µs |
-| `get` | ~1.1 ns |
-| `read_range` (100 entries) | ~3.2 µs |
+| `get` | ~1.4 ns |
+| `read_range` (100 entries) | ~3.7 µs |
 | `recovery` (10k entries, 1 segment) | ~1.3 ms |
-| `recovery` (10k entries, multi-segment) | ~2.0 ms |
+| `recovery` (10k entries, multi-segment) | ~2.4 ms |
 
 ```sh
 cargo bench --bench comparison  # vs sled, redb, rocksdb
