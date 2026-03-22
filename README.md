@@ -87,7 +87,7 @@ use raft_wal::OpenRaftLogStorage;
 let storage = OpenRaftLogStorage::<MyTypeConfig>::open("./raft-data").await?;
 ```
 
-`C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement `serde::Serialize + serde::Deserialize`.
+`C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement `bitcode::Encode + bitcode::DecodeOwned`.
 
 ## Durability
 

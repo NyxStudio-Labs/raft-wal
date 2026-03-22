@@ -1,6 +1,6 @@
 [package]
 name = "raft-wal"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus"
@@ -11,14 +11,13 @@ readme = "README.md"
 
 [features]
 tokio = ["dep:tokio"]
-openraft-storage = ["dep:openraft", "dep:serde", "dep:serde_json", "tokio"]
+openraft-storage = ["dep:openraft", "dep:bitcode", "tokio"]
 
 [dependencies]
 crc32c = "0.6.8"
 tokio = { version = "1.50.0", features = ["fs", "io-util", "rt"], optional = true }
 openraft = { version = "0.10.0-alpha.17", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+bitcode = { version = "0.6", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

@@ -6,9 +6,9 @@ use std::fmt::Debug;
 use std::io;
 use std::ops::RangeBounds;
 
+use openraft::entry::RaftEntry;
 use openraft::storage::{IOFlushed, LogState, RaftLogReader, RaftLogStorage};
 use openraft::type_config::alias::{LogIdOf, VoteOf};
-use openraft::entry::RaftEntry;
 use openraft::{OptionalSend, RaftTypeConfig};
 
 use crate::AsyncRaftWal;
@@ -17,12 +17,12 @@ const META_VOTE: &str = "openraft:vote";
 const META_COMMITTED: &str = "openraft:committed";
 const META_PURGED: &str = "openraft:purged";
 
-fn ser<T: serde::Serialize>(v: &T) -> Vec<u8> {
-    serde_json::to_vec(v).expect("serialization should not fail")
+fn ser<T: bitcode::Encode>(v: &T) -> Vec<u8> {
+    bitcode::encode(v)
 }
 
-fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
-    serde_json::from_slice(bytes).ok()
+fn de<T: bitcode::DecodeOwned>(bytes: &[u8]) -> Option<T> {
+    bitcode::decode::<T>(bytes).ok()
 }
 
 fn io_err(e: crate::WalError) -> io::Error {
@@ -34,11 +34,11 @@ fn io_err(e: crate::WalError) -> io::Error {
 /// A wrapper around [`AsyncRaftWal`] that implements openraft's
 /// [`RaftLogStorage`] and [`RaftLogReader`] traits.
 ///
-/// Entries are stored as JSON-serialized bytes. Vote, committed log ID,
+/// Entries are stored as bitcode-serialized bytes. Vote, committed log ID,
 /// and purged log ID are persisted via WAL metadata (always fsynced).
 ///
 /// `C::Entry`, `VoteOf<C>`, and `LogIdOf<C>` must implement
-/// `serde::Serialize + serde::Deserialize`.
+/// `bitcode::Encode + bitcode::DecodeOwned`.
 pub struct OpenRaftLogStorage<C: RaftTypeConfig> {
     wal: AsyncRaftWal,
     _phantom: std::marker::PhantomData<C>,
@@ -66,8 +66,8 @@ impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
 
 impl<C: RaftTypeConfig> RaftLogReader<C> for OpenRaftLogStorage<C>
 where
-    C::Entry: serde::Serialize + serde::de::DeserializeOwned,
-    VoteOf<C>: serde::Serialize + serde::de::DeserializeOwned,
+    C::Entry: bitcode::Encode + bitcode::DecodeOwned,
+    VoteOf<C>: bitcode::Encode + bitcode::DecodeOwned,
 {
     async fn try_get_log_entries<RB>(
         &mut self,
@@ -91,9 +91,9 @@ where
 
 impl<C: RaftTypeConfig> RaftLogStorage<C> for OpenRaftLogStorage<C>
 where
-    C::Entry: serde::Serialize + serde::de::DeserializeOwned,
-    VoteOf<C>: serde::Serialize + serde::de::DeserializeOwned,
-    LogIdOf<C>: serde::Serialize + serde::de::DeserializeOwned + Copy,
+    C::Entry: bitcode::Encode + bitcode::DecodeOwned,
+    VoteOf<C>: bitcode::Encode + bitcode::DecodeOwned,
+    LogIdOf<C>: bitcode::Encode + bitcode::DecodeOwned + Copy,
 {
     type LogReader = Self;
 
