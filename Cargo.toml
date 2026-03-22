@@ -1,0 +1,30 @@
+[package]
+name = "raft-wal"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus"
+keywords = ["raft", "wal", "write-ahead-log", "consensus", "storage"]
+categories = ["database", "data-structures"]
+repository = "https://github.com/NyxStudio-Labs/raft-wal"
+readme = "README.md"
+
+[features]
+tokio = ["dep:tokio"]
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["fs", "io-util", "rt"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+tempfile = "3.27.0"
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "fs", "io-util"] }
+
+[[bench]]
+name = "wal"
+harness = false
+
+[[bench]]
+name = "wal_async"
+harness = false
+required-features = ["tokio"]

@@ -1,0 +1,127 @@
+# raft-wal
+
+A minimal, zero-dependency append-only WAL (Write-Ahead Log) optimized for Raft consensus.
+
+General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Raft log storage. raft-wal focuses on four operations: **append**, **range read**, **truncate**, and **metadata** — nothing else.
+
+## Features
+
+- **Fast** — ~380ns append (with CRC32C), ~1ns get (O(1) via `VecDeque`)
+- **Zero required dependencies** — only `tokio` as an optional feature
+- **Sync & async** — `RaftWal` and `AsyncRaftWal` share the same optimized core
+- **Raft-correct durability** — metadata (term/vote) is always fsynced; log entries are buffered with opt-in `sync()`
+- **Integrity** — every entry is protected by a CRC32C checksum; corrupted or partial writes are detected on recovery
+- **Segment-based storage** — log is split into segment files (default 64 MB); `compact()` deletes old segments without rewriting
+- **Parallel recovery** — segment files are read and CRC-verified in parallel across CPU cores
+- **Cross-platform** — Linux, macOS, Windows
+
+## Usage
+
+```toml
+[dependencies]
+raft-wal = "0.1"
+
+# For async support:
+# raft-wal = { version = "0.1", features = ["tokio"] }
+```
+
+```rust
+use raft_wal::RaftWal;
+
+let mut wal = RaftWal::open("./my-raft-data").unwrap();
+
+// Append log entries
+wal.append(1, b"entry-1").unwrap();
+wal.append(2, b"entry-2").unwrap();
+
+// Read entries
+assert_eq!(wal.get(1), Some(b"entry-1".as_slice()));
+
+let entries: Vec<_> = wal.iter_range(1..=2).collect();
+assert_eq!(entries.len(), 2);
+
+// Store Raft metadata (always fsynced)
+wal.set_meta("term", b"5").unwrap();
+wal.set_meta("vote", b"node-2").unwrap();
+
+// Snapshot compaction — deletes old segment files
+wal.compact(1).unwrap(); // discard index <= 1
+
+// Conflict resolution
+wal.truncate(2).unwrap(); // discard index >= 2
+
+// Opt-in durable write
+wal.append(3, b"entry-3").unwrap();
+wal.sync().unwrap(); // fsync to disk
+```
+
+### Async
+
+```rust
+use raft_wal::AsyncRaftWal;
+
+let mut wal = AsyncRaftWal::open("./my-raft-data").await.unwrap();
+
+wal.append(1, b"entry-1").await.unwrap();
+wal.set_meta("term", b"1").await.unwrap();
+
+// Must call close() — tokio can't flush in Drop
+wal.close().await.unwrap();
+```
+
+## Durability
+
+| Operation | Behavior |
+|---|---|
+| `set_meta` / `remove_meta` | Always fsynced (Raft election safety) |
+| `append` / `append_batch` | Buffered, no fsync |
+| `sync()` | Flushes + fsyncs log entries |
+| `flush()` | Flushes to OS without fsync |
+
+**Metadata** (term, votedFor) must survive crashes per the Raft paper. `set_meta` writes to a temp file, fsyncs, then atomically renames.
+
+**Log entries** are buffered for performance. Call `sync()` after append if your Raft implementation requires durable entries before acknowledging `AppendEntries`.
+
+## Integrity
+
+Each entry on disk is prefixed with a CRC32C checksum covering the index, payload length, and payload bytes. On recovery, entries with invalid checksums or incomplete writes are silently discarded from the tail — the WAL recovers up to the last good entry.
+
+## Benchmarks
+
+Measured on Linux with 128-byte entries:
+
+| Operation | Latency |
+|---|---|
+| `append` | ~380 ns |
+| `append_batch` (10 entries) | ~3.7 µs |
+| `get` | ~1 ns |
+| `read_range` (100 entries) | ~3.3 µs |
+| `recovery` (10k entries, 1 segment) | ~3.1 ms |
+| `recovery` (10k entries, multi-segment) | ~2.3 ms |
+
+```sh
+cargo bench
+cargo bench --bench wal_async --features tokio
+```
+
+## Design
+
+- **In-memory index**: `VecDeque<Vec<u8>>` with a base offset — O(1) append and lookup. All entries are held in memory; call `compact()` periodically after snapshots to free memory. Use `estimated_memory()` to monitor usage.
+- **Segment files**: the log is split into segment files (`{index}.seg`). When the active segment exceeds `max_segment_size` (default 64 MB), it is sealed and a new segment begins. `compact()` deletes old segments with a file remove — no rewrite needed.
+- **Entry format**: `[u32 crc32c LE][u64 index LE][u32 payload_len LE][payload]` — 16-byte header per entry
+- **Buffered writes**: 64 KB `BufWriter` (sync) or userspace buffer (async) — syscalls only when the buffer fills
+- **Parallel recovery**: segment files are read and CRC-verified concurrently using one thread per CPU core (`std::thread::scope`) or `tokio::spawn` (async)
+- **Atomic metadata**: `set_meta` writes to a temp file, fsyncs, then renames — crash-safe
+- **Zero external dependencies**: CRC32C uses a compile-time lookup table; meta serialization uses a simple length-prefixed binary format
+
+## Status
+
+This crate is in early development and has not been battle-tested in production yet. It is planned for use in [Nyx Studio](https://github.com/NyxStudio-Labs) infrastructure. Use at your own risk.
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and guidelines.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
