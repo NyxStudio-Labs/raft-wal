@@ -262,11 +262,11 @@ impl AsyncRaftWal {
         Ok(())
     }
 
-    /// Flushes buffered writes and fsyncs to stable storage.
+    /// Flushes buffered writes and fsyncs data to stable storage.
     pub async fn sync(&mut self) -> Result<()> {
         self.flush_buf().await?;
         self.wal_file.flush().await?;
-        self.wal_file.sync_all().await?;
+        self.wal_file.sync_data().await?;
         Ok(())
     }
 

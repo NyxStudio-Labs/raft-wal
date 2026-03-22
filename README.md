@@ -121,33 +121,36 @@ Measured on Linux with 128-byte entries. Lower is better.
 
 | Operation | raft-wal | sled | redb | rocksdb |
 |---|---|---|---|---|
-| **append** | **225 ns** | 3.69 µs | 2.22 ms | 1.19 µs |
-| **get** | **1.5 ns** | 196 ns | 438 ns | 301 ns |
-| **recovery** (10k) | **1.59 ms** | 11.2 ms | 2.50 ms | 9.26 ms |
+| **append** | **209 ns** | 3.54 µs | 604 µs | 1.16 µs |
+| **get** | **1.5 ns** | 194 ns | 439 ns | 321 ns |
+| **recovery** (10k) | **1.37 ms** | 4.97 ms | 7.00 ms | 26.3 ms |
 
-> **Note:** `append` numbers above are **buffered without fsync**. sled and rocksdb
-> also buffer by default. redb fsyncs every transaction, so the comparison is not
-> apples-to-apples. See the durable append row below for a fair durability comparison.
+> **Note on durability:** `append` numbers above are **buffered without fsync**.
+> sled and rocksdb also buffer by default. redb fsyncs every transaction.
+> Latencies vary with disk cache state — run `cargo bench --bench comparison` on your hardware.
 
-### append with fsync (durable write)
+### durable writes (with fdatasync)
 
-| | raft-wal (`append` + `sync()`) | redb (per-txn fsync) | rocksdb (WAL fsync) |
-|---|---|---|---|
-| **latency** | ~1.01 ms | ~2.22 ms | ~1.19 µs* |
+| Pattern | Latency | Per-entry cost |
+|---|---|---|
+| `append` + `sync()` (1 entry) | ~2.4 ms | 2.4 ms |
+| `append_batch(10)` + `sync()` | ~5.0 ms | **500 µs** |
 
-\* rocksdb buffers WAL writes by default; its durable mode (`sync_wal`) is not benchmarked here.
+> In real Raft, `AppendEntries` RPCs carry multiple entries. Batch + single fdatasync
+> is the typical pattern, making the per-entry durable cost ~500µs rather than ~2.4ms.
 
 ### raft-wal detailed
 
 | Operation | Latency |
 |---|---|
-| `append` (buffered) | ~223 ns |
-| `append` + `sync()` (durable) | ~1.01 ms |
-| `append_batch` (10 entries) | ~1.7 µs |
+| `append` (buffered) | ~260 ns |
+| `append` + `sync()` (durable) | ~2.4 ms |
+| `append_batch(10)` + `sync()` | ~5.0 ms |
+| `append_batch(10)` (buffered) | ~1.8 µs |
 | `get` (cache hit) | ~1.4 ns |
-| `read_range` (100 entries) | ~3.5 µs |
+| `read_range` (100 entries) | ~3.3 µs |
 | `recovery` (10k entries, 1 segment) | ~1.3 ms |
-| `recovery` (10k entries, multi-segment) | ~2.1 ms |
+| `recovery` (10k entries, multi-segment) | ~2.3 ms |
 
 ```sh
 cargo bench --bench comparison  # vs sled, redb, rocksdb

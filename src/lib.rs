@@ -427,7 +427,7 @@ impl RaftWal {
     /// requires durable log entries before acknowledging `AppendEntries`.
     pub fn sync(&mut self) -> Result<()> {
         self.active_writer.flush()?;
-        self.active_writer.get_ref().sync_all()?;
+        self.active_writer.get_ref().sync_data()?;
         Ok(())
     }
 
