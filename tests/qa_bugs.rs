@@ -358,3 +358,53 @@ fn regression_compact_eviction_disk_read() {
     assert!(wal.get_cached(1).is_none(), "compacted entry not in cache");
     assert!(wal.get_cached(30).is_none(), "compacted entry not in cache");
 }
+
+// ========================================================================
+// Async regression tests (require tokio feature)
+// ========================================================================
+
+#[cfg(feature = "tokio")]
+mod async_bugs {
+    use raft_wal::AsyncRaftWal;
+
+    /// #8: openraft's append should sync before reporting durability.
+    /// Test that sync() guarantees data survives reopen, while entries
+    /// without sync may be lost on crash (simulated via mem::forget).
+    #[tokio::test]
+    async fn bug08_sync_required_for_durability() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+
+        // Crash simulation: entries without sync
+        {
+            let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+            wal.append(1, b"unsynced").await.expect("append");
+            std::mem::forget(wal); // simulate crash
+        }
+
+        // Verify: synced entries survive
+        {
+            let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+            wal.append(10, b"synced").await.expect("append");
+            wal.sync().await.expect("sync");
+            wal.close().await.expect("close");
+        }
+        {
+            let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+            assert_eq!(wal.get(10), Some(b"synced".as_slice()));
+        }
+    }
+
+    /// #6: async compact/truncate should work correctly with async I/O.
+    #[tokio::test]
+    async fn bug06_async_compact_removes_segments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = AsyncRaftWal::open(dir.path()).await.expect("open");
+        for i in 1..=100 {
+            wal.append(i, &[0u8; 1024]).await.expect("append");
+        }
+        wal.sync().await.expect("sync");
+        wal.compact(80).await.expect("compact");
+        assert_eq!(wal.first_index(), Some(81));
+    }
+}

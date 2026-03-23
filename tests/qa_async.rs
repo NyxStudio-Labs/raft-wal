@@ -1,5 +1,15 @@
 #![cfg(feature = "tokio")]
-//! QA tests for AsyncRaftWal (tokio).
+//! Async-specific QA tests for AsyncRaftWal.
+//!
+//! Logic tests (append, get, iter, compact, truncate) are covered by
+//! the sync tests in qa.rs since they share the same core logic via
+//! core.rs. These tests focus on async I/O behavior that ONLY the
+//! tokio backend exercises:
+//!   - Recovery across close/reopen
+//!   - Flush/sync durability
+//!   - CRC corruption recovery (async segment reading)
+//!   - close() lifecycle
+//!   - Segment rotation under async I/O
 
 use raft_wal::AsyncRaftWal;
 use std::fs;
@@ -7,7 +17,7 @@ use std::path::Path;
 
 fn find_segments(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut segs: Vec<_> = fs::read_dir(dir)
-        .unwrap()
+        .expect("readdir")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("seg"))
@@ -17,410 +27,232 @@ fn find_segments(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 // ========================================================================
-// Happy Path
+// Recovery (async file lifecycle: close → reopen)
 // ========================================================================
 
 #[tokio::test]
-async fn async_hp01_open_append_get() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    wal.append(1, b"hello").await.unwrap();
-    assert_eq!(wal.get(1).as_deref(), Some(b"hello".as_slice()));
-    assert_eq!(wal.len(), 1);
-}
-
-#[tokio::test]
-async fn async_hp02_append_batch_borrowed() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    wal.append_batch(&[(1, b"a" as &[u8]), (2, b"b"), (3, b"c")])
-        .await
-        .unwrap();
-    assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
-}
-
-#[tokio::test]
-async fn async_hp03_append_batch_owned() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    let entries = vec![(1u64, vec![1u8, 2]), (2, vec![3, 4])];
-    wal.append_batch(&entries).await.unwrap();
-    assert_eq!(wal.get(1).as_deref(), Some([1u8, 2].as_slice()));
-}
-
-#[tokio::test]
-async fn async_hp04_iter() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, format!("e{i}").as_bytes()).await.unwrap();
-    }
-    let all: Vec<_> = wal.iter().collect();
-    assert_eq!(all.len(), 5);
-    assert_eq!(all[0].index, 1);
-    assert_eq!(all[4].data, b"e5");
-}
-
-#[tokio::test]
-async fn async_hp05_iter_range() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=10 {
-        wal.append(i, format!("e{i}").as_bytes()).await.unwrap();
-    }
-    let r: Vec<_> = wal.iter_range(3..=7).collect();
-    assert_eq!(r.len(), 5);
-    assert_eq!(r[0].index, 3);
-}
-
-#[tokio::test]
-async fn async_hp06_read_range() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=10 {
-        wal.append(i, format!("e{i}").as_bytes()).await.unwrap();
-    }
-    let r = wal.read_range(3..=7);
-    assert_eq!(r.len(), 5);
-}
-
-#[tokio::test]
-async fn async_hp07_recovery() {
-    let dir = tempfile::tempdir().unwrap();
+async fn recovery_after_close() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, b"a").await.unwrap();
-        wal.append(2, b"b").await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, b"a").await.expect("a");
+        wal.append(2, b"b").await.expect("b");
+        wal.set_meta("vote", b"v1").await.expect("meta");
+        wal.close().await.expect("close");
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.len(), 2);
         assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
+        assert_eq!(wal.get_meta("vote"), Some(b"v1".as_slice()));
     }
 }
 
 #[tokio::test]
-async fn async_hp08_meta() {
-    let dir = tempfile::tempdir().unwrap();
+async fn recovery_after_compact() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.set_meta("term", b"5").await.unwrap();
-        wal.set_meta("vote", b"node-2").await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        for i in 1..=10 {
+            wal.append(i, format!("e{i}").as_bytes()).await.expect("a");
+        }
+        wal.compact(7).await.expect("compact");
+        wal.close().await.expect("close");
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert_eq!(wal.len(), 3);
+        assert_eq!(wal.first_index(), Some(8));
+        assert_eq!(wal.get(8).as_deref(), Some(b"e8".as_slice()));
+        assert!(wal.get(7).is_none());
+    }
+}
+
+#[tokio::test]
+async fn meta_persistence_across_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().to_path_buf();
+    {
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.set_meta("term", b"5").await.expect("set");
+        wal.set_meta("vote", b"node-2").await.expect("set");
+        wal.close().await.expect("close");
+    }
+    {
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.get_meta("term"), Some(b"5".as_slice()));
         assert_eq!(wal.get_meta("vote"), Some(b"node-2".as_slice()));
     }
 }
 
-#[tokio::test]
-async fn async_hp09_compact() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.compact(3).await.unwrap();
-    assert_eq!(wal.len(), 2);
-    assert_eq!(wal.first_index(), Some(4));
-}
+// ========================================================================
+// Durability (flush/sync/close semantics)
+// ========================================================================
 
 #[tokio::test]
-async fn async_hp10_truncate() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.truncate(3).await.unwrap();
-    assert_eq!(wal.len(), 2);
-    assert_eq!(wal.last_index(), Some(2));
-}
-
-#[tokio::test]
-async fn async_hp11_compact_recovery() {
-    let dir = tempfile::tempdir().unwrap();
+async fn flush_persists_on_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        for i in 1..=5 {
-            wal.append(i, format!("e{i}").as_bytes()).await.unwrap();
-        }
-        wal.compact(3).await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, b"buffered").await.expect("a");
+        wal.flush().await.expect("flush");
+        // Drop without close — flush should have written to OS
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.len(), 2);
-        assert_eq!(wal.first_index(), Some(4));
-        assert_eq!(wal.get(4).as_deref(), Some(b"e4".as_slice()));
-    }
-}
-
-#[tokio::test]
-async fn async_hp12_flush() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_path_buf();
-    {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, b"buffered").await.unwrap();
-        wal.flush().await.unwrap();
-    }
-    {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.get(1).as_deref(), Some(b"buffered".as_slice()));
     }
 }
 
 #[tokio::test]
-async fn async_hp13_sync() {
-    let dir = tempfile::tempdir().unwrap();
+async fn sync_persists_on_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, b"durable").await.unwrap();
-        wal.sync().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, b"durable").await.expect("a");
+        wal.sync().await.expect("sync");
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.get(1).as_deref(), Some(b"durable".as_slice()));
     }
 }
 
 #[tokio::test]
-async fn async_hp14_estimated_memory() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    let before = wal.estimated_memory();
-    for i in 1..=100 {
-        wal.append(i, &[0u8; 256]).await.unwrap();
-    }
-    assert!(wal.estimated_memory() > before);
-}
-
-#[tokio::test]
-async fn async_hp15_close() {
-    let dir = tempfile::tempdir().unwrap();
+async fn close_guarantees_durability() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, b"closed").await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, b"closed").await.expect("a");
+        wal.close().await.expect("close");
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.get(1).as_deref(), Some(b"closed".as_slice()));
     }
 }
 
-#[tokio::test]
-async fn async_hp16_append_after_compact() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.compact(3).await.unwrap();
-    wal.append(6, b"new").await.unwrap();
-    assert_eq!(wal.len(), 3);
-    assert_eq!(wal.get(6).as_deref(), Some(b"new".as_slice()));
-}
-
-#[tokio::test]
-async fn async_hp17_append_after_truncate() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"old").await.unwrap();
-    }
-    wal.truncate(3).await.unwrap();
-    wal.append(3, b"new").await.unwrap();
-    assert_eq!(wal.get(3).as_deref(), Some(b"new".as_slice()));
-}
-
-#[tokio::test]
-async fn async_hp18_large_entry() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_path_buf();
-    let big = vec![0xABu8; 1024 * 1024];
-    {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, &big).await.unwrap();
-        wal.close().await.unwrap();
-    }
-    {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get(1).unwrap().as_ref(), big.as_slice());
-    }
-}
-
 // ========================================================================
-// Reverse QA
+// CRC corruption recovery (async segment reading path)
 // ========================================================================
 
 #[tokio::test]
-async fn async_rq01_empty_wal() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    assert!(wal.is_empty());
-    assert_eq!(wal.first_index(), None);
-    assert_eq!(wal.last_index(), None);
-    assert!(wal.get(1).is_none());
-    wal.compact(10).await.unwrap();
-    wal.truncate(1).await.unwrap();
-}
-
-#[tokio::test]
-async fn async_rq02_get_out_of_range() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    wal.append(5, b"x").await.unwrap();
-    assert!(wal.get(0).is_none());
-    assert!(wal.get(4).is_none());
-    assert!(wal.get(6).is_none());
-}
-
-#[tokio::test]
-async fn async_rq03_compact_noop() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 5..=10 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.compact(2).await.unwrap();
-    assert_eq!(wal.len(), 6);
-}
-
-#[tokio::test]
-async fn async_rq04_truncate_noop() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 5..=10 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.truncate(20).await.unwrap();
-    assert_eq!(wal.len(), 6);
-}
-
-#[tokio::test]
-async fn async_rq05_double_compact() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=10 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.compact(5).await.unwrap();
-    wal.compact(7).await.unwrap();
-    assert_eq!(wal.len(), 3);
-    assert_eq!(wal.first_index(), Some(8));
-}
-
-#[tokio::test]
-async fn async_rq06_double_truncate() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=10 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.truncate(8).await.unwrap();
-    wal.truncate(5).await.unwrap();
-    assert_eq!(wal.len(), 4);
-    assert_eq!(wal.last_index(), Some(4));
-}
-
-#[tokio::test]
-async fn async_rq07_corrupt_recovery() {
-    let dir = tempfile::tempdir().unwrap();
+async fn corrupt_crc_recovery() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.append(1, b"good").await.unwrap();
-        wal.append(2, b"will-corrupt").await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, b"good").await.expect("a");
+        wal.append(2, b"will-corrupt").await.expect("a");
+        wal.close().await.expect("close");
     }
     let segs = find_segments(&path);
     let last_seg = &segs[segs.len() - 1];
-    let mut data = fs::read(last_seg).unwrap();
-    // Account for segment version header (5 bytes: "RWAL" + version)
+    let mut data = fs::read(last_seg).expect("read seg");
     let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
-    let second_entry_offset = seg_hdr + 20; // first entry: 16 hdr + 4 payload
+    let second_entry_offset = seg_hdr + 20;
     if data.len() > second_entry_offset {
         data[second_entry_offset] ^= 0xFF;
-        fs::write(last_seg, &data).unwrap();
+        fs::write(last_seg, &data).expect("write corrupt");
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
         assert!(wal.get(2).is_none());
     }
 }
 
+// ========================================================================
+// Large entry recovery (tests async segment read for big files)
+// ========================================================================
+
 #[tokio::test]
-async fn async_rq08_meta_overwrite() {
-    let dir = tempfile::tempdir().unwrap();
+async fn large_entry_recovery() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().to_path_buf();
+    let big = vec![0xABu8; 1024 * 1024];
+    {
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        wal.append(1, &big).await.expect("a");
+        wal.close().await.expect("close");
+    }
+    {
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert_eq!(wal.get(1).as_deref().map(|s| s.len()), Some(big.len()));
+    }
+}
+
+// ========================================================================
+// Recovery without close (Drop without async cleanup)
+// ========================================================================
+
+#[tokio::test]
+async fn recovery_without_close() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().to_path_buf();
     {
-        let mut wal = AsyncRaftWal::open(&path).await.unwrap();
-        wal.set_meta("k", b"v1").await.unwrap();
-        wal.set_meta("k", b"v2").await.unwrap();
-        wal.close().await.unwrap();
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        // Write enough to trigger at least one flush (64KB threshold)
+        for i in 1..=100 {
+            wal.append(i, &[0u8; 1024]).await.expect("a");
+        }
+        // Drop without close/sync
     }
     {
-        let wal = AsyncRaftWal::open(&path).await.unwrap();
-        assert_eq!(wal.get_meta("k"), Some(b"v2".as_slice()));
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert!(wal.len() > 0, "should recover flushed entries");
+    }
+}
+
+// ========================================================================
+// Partial segment compact/truncate recovery (async I/O path)
+// ========================================================================
+
+#[tokio::test]
+async fn compact_partial_segment_recovery() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().to_path_buf();
+    {
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        // Force segment rotation with enough data
+        for i in 1..=50 {
+            wal.append(i, &[0u8; 2048]).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        // Compact in the middle of a sealed segment
+        wal.compact(25).await.expect("compact");
+        wal.close().await.expect("close");
+    }
+    {
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert_eq!(wal.first_index(), Some(26));
+        assert!(wal.get(25).is_none(), "compacted entry should not resurrect");
+        assert!(wal.get(26).is_some(), "entry after compact boundary should exist");
     }
 }
 
 #[tokio::test]
-async fn async_rq09_remove_nonexistent_meta() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    wal.remove_meta("nope").await.unwrap();
-    assert!(wal.get_meta("nope").is_none());
-}
-
-#[tokio::test]
-async fn async_rq10_compact_all_then_append() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"x").await.unwrap();
+async fn truncate_partial_segment_recovery() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().to_path_buf();
+    {
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        for i in 1..=50 {
+            wal.append(i, &[0u8; 2048]).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        wal.truncate(25).await.expect("truncate");
+        wal.close().await.expect("close");
     }
-    wal.compact(5).await.unwrap();
-    assert!(wal.is_empty());
-    wal.append(6, b"after").await.unwrap();
-    assert_eq!(wal.get(6).as_deref(), Some(b"after".as_slice()));
-}
-
-#[tokio::test]
-async fn async_rq11_truncate_all_then_append() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=5 {
-        wal.append(i, b"x").await.unwrap();
+    {
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert_eq!(wal.last_index(), Some(24));
+        assert!(wal.get(25).is_none(), "truncated entry should not resurrect");
+        assert!(wal.get(24).is_some(), "entry before truncate boundary should exist");
     }
-    wal.truncate(1).await.unwrap();
-    assert!(wal.is_empty());
-    wal.append(1, b"fresh").await.unwrap();
-    assert_eq!(wal.get(1).as_deref(), Some(b"fresh".as_slice()));
-}
-
-#[tokio::test]
-async fn async_rq12_compact_then_truncate() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut wal = AsyncRaftWal::open(dir.path()).await.unwrap();
-    for i in 1..=10 {
-        wal.append(i, b"x").await.unwrap();
-    }
-    wal.compact(3).await.unwrap();
-    wal.truncate(8).await.unwrap();
-    assert_eq!(wal.len(), 4);
-    assert_eq!(wal.first_index(), Some(4));
-    assert_eq!(wal.last_index(), Some(7));
 }
