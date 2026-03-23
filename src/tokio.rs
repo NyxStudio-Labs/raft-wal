@@ -528,4 +528,56 @@ mod tests {
             assert_eq!(wal.get(4), Some(b"e4".as_slice()));
         }
     }
+
+    #[::tokio::test]
+    async fn segment_rotation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = AsyncRaftWal::open(dir.path()).await.expect("open");
+        // Force rotation with many entries
+        for i in 1..=200 {
+            wal.append(i, &[0u8; 512]).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        assert_eq!(wal.len(), 200);
+        assert_eq!(wal.get(1).as_deref(), Some([0u8; 512].as_slice()));
+        assert_eq!(wal.get(200).as_deref(), Some([0u8; 512].as_slice()));
+    }
+
+    #[::tokio::test]
+    async fn compact_partial_sealed_segment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = AsyncRaftWal::open(dir.path()).await.expect("open");
+        for i in 1..=100 {
+            wal.append(i, &[0u8; 1024]).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        wal.compact(50).await.expect("compact");
+        assert_eq!(wal.first_index(), Some(51));
+        assert!(wal.get(50).is_none());
+        assert!(wal.get(51).is_some());
+    }
+
+    #[::tokio::test]
+    async fn truncate_partial_sealed_segment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = AsyncRaftWal::open(dir.path()).await.expect("open");
+        for i in 1..=100 {
+            wal.append(i, &[0u8; 1024]).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        wal.truncate(50).await.expect("truncate");
+        assert_eq!(wal.last_index(), Some(49));
+        assert!(wal.get(50).is_none());
+        assert!(wal.get(49).is_some());
+    }
+
+    #[::tokio::test]
+    async fn remove_meta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = AsyncRaftWal::open(dir.path()).await.expect("open");
+        wal.set_meta("k", b"v").await.expect("set");
+        assert_eq!(wal.get_meta("k"), Some(b"v".as_slice()));
+        wal.remove_meta("k").await.expect("rm");
+        assert!(wal.get_meta("k").is_none());
+    }
 }

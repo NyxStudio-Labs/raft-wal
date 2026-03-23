@@ -892,3 +892,166 @@ fn find_segments(dir: &Path) -> Vec<std::path::PathBuf> {
 fn seg_count(dir: &Path) -> usize {
     find_segments(dir).len()
 }
+
+// ========================================================================
+// Coverage boosters: partial segment rewrite, evicted disk read
+// ========================================================================
+
+/// Compact in the middle of a sealed segment — forces partial rewrite.
+#[test]
+fn compact_partial_segment_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(256); // small to force rotation
+
+    for i in 1..=50 {
+        wal.append(i, format!("v{i}").as_bytes()).unwrap();
+    }
+    wal.sync().unwrap();
+    assert!(seg_count(dir.path()) > 1);
+
+    // Compact in the middle of a sealed segment
+    wal.compact(25).unwrap();
+    assert_eq!(wal.first_index(), Some(26));
+
+    // Reopen — verify compacted entries don't resurrect
+    drop(wal);
+    let wal = open(dir.path());
+    assert_eq!(wal.first_index(), Some(26));
+    assert!(wal.get(25).is_none(), "compacted entry should not resurrect");
+    assert_eq!(wal.get(26).as_deref(), Some(b"v26".as_slice()));
+    assert_eq!(wal.get(50).as_deref(), Some(b"v50".as_slice()));
+}
+
+/// Truncate in the middle of a sealed segment — forces partial rewrite.
+#[test]
+fn truncate_partial_segment_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(256);
+
+    for i in 1..=50 {
+        wal.append(i, format!("v{i}").as_bytes()).unwrap();
+    }
+    wal.sync().unwrap();
+
+    wal.truncate(25).unwrap();
+    assert_eq!(wal.last_index(), Some(24));
+
+    drop(wal);
+    let wal = open(dir.path());
+    assert_eq!(wal.last_index(), Some(24));
+    assert!(wal.get(25).is_none(), "truncated entry should not resurrect");
+    assert_eq!(wal.get(24).as_deref(), Some(b"v24".as_slice()));
+}
+
+/// Rewrite active segment with evicted entries reads from disk.
+#[test]
+fn rewrite_active_preserves_evicted_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+
+    // All entries in one active segment (no rotation)
+    for i in 1..=20 {
+        wal.append(i, format!("e{i}").as_bytes()).unwrap();
+    }
+    wal.sync().unwrap();
+
+    // Evict most entries from cache
+    wal.set_max_cache_entries(3).unwrap();
+
+    // Compact triggers rewrite_active_segment — evicted entries must be
+    // read from disk and re-serialized
+    wal.compact(5).unwrap();
+
+    // Verify all remaining entries survive
+    for i in 6..=20 {
+        assert_eq!(
+            wal.get(i).as_deref(),
+            Some(format!("e{i}").as_bytes()),
+            "entry {i} should survive compact+rewrite"
+        );
+    }
+
+    // Reopen to verify persistence
+    drop(wal);
+    let wal = open(dir.path());
+    assert_eq!(wal.first_index(), Some(6));
+    assert_eq!(wal.last_index(), Some(20));
+    for i in 6..=20 {
+        assert_eq!(
+            wal.get(i).as_deref(),
+            Some(format!("e{i}").as_bytes()),
+            "entry {i} should survive reopen after compact+rewrite"
+        );
+    }
+}
+
+/// read_from_disk with offset map (binary search path).
+#[test]
+fn read_from_disk_uses_offset_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(512); // force sealed segments
+
+    for i in 1..=100 {
+        wal.append(i, format!("data-{i}").as_bytes()).unwrap();
+    }
+    wal.sync().unwrap();
+
+    // Evict everything to force disk reads
+    wal.set_max_cache_entries(1).unwrap();
+
+    // Read various entries — exercises the offset map binary search
+    assert_eq!(wal.get(1).as_deref(), Some(b"data-1".as_slice()));
+    assert_eq!(wal.get(50).as_deref(), Some(b"data-50".as_slice()));
+    assert_eq!(wal.get(99).as_deref(), Some(b"data-99".as_slice()));
+}
+
+/// Zero-length entry should be distinguishable from evicted entry.
+#[test]
+fn zero_length_entry_survives_eviction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wal = open(dir.path());
+    wal.set_max_segment_size(256);
+
+    wal.append(1, b"").unwrap(); // zero-length
+    wal.append(2, b"nonempty").unwrap();
+    wal.append(3, b"").unwrap(); // another zero-length
+
+    // Force some sealed segments
+    for i in 4..=30 {
+        wal.append(i, &[0u8; 32]).unwrap();
+    }
+    wal.sync().unwrap();
+
+    // Zero-length entries should be in cache
+    assert_eq!(wal.get(1).as_deref(), Some(b"".as_slice()));
+    assert_eq!(wal.get(3).as_deref(), Some(b"".as_slice()));
+
+    // After eviction, zero-length entries should still be readable from disk
+    wal.set_max_cache_entries(5).unwrap();
+    assert!(wal.get_cached(1).is_none(), "entry 1 should be evicted");
+
+    // Disk fallback for zero-length entries
+    let entry = wal.get(1);
+    assert_eq!(entry.as_deref(), Some(b"".as_slice()), "zero-length entry should survive eviction via disk");
+}
+
+/// Default read_file_range implementation (on WalStorage trait).
+#[test]
+fn default_read_file_range() {
+    use raft_wal::{StdStorage, WalStorage};
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = StdStorage::new(dir.path()).unwrap();
+    storage.write_file("test.bin", b"hello world").unwrap();
+
+    // Override impl (seek-based)
+    let range = storage.read_file_range("test.bin", 6, 5).unwrap();
+    assert_eq!(&range, b"world");
+
+    // Edge: read past end returns error (read_exact fails)
+    let result = storage.read_file_range("test.bin", 9, 100);
+    assert!(result.is_err(), "reading past end should fail");
+}
+

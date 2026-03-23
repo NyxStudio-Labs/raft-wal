@@ -205,6 +205,24 @@ fn bug03_compact_propagates_remove_file_error() {
     assert_eq!(wal.first_index(), Some(16));
 }
 
+/// Test the default WalStorage::read_file_range implementation (fallback).
+#[test]
+fn default_read_file_range_fallback() {
+    // FailOnRemoveStorage uses the DEFAULT read_file_range (not overridden)
+    let mut storage = FailOnRemoveStorage::new();
+    storage.write_file("test.dat", b"hello world").expect("write");
+
+    let result = storage.read_file_range("test.dat", 6, 5).expect("range");
+    assert_eq!(&result, b"world");
+
+    // Past-end is clamped by default impl
+    let result = storage.read_file_range("test.dat", 9, 100).expect("range");
+    assert_eq!(&result, b"ld");
+
+    let result = storage.read_file_range("test.dat", 0, 5).expect("range");
+    assert_eq!(&result, b"hello");
+}
+
 // ========================================================================
 // #4 — read_from_disk loads the entire segment for a single entry lookup
 // ========================================================================

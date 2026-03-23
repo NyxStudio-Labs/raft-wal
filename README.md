@@ -3,8 +3,8 @@
 [![crates.io](https://img.shields.io/crates/v/raft-wal.svg)](https://crates.io/crates/raft-wal)
 [![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
 [![CI](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml/badge.svg)](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml)
-[![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
-[![tests](https://img.shields.io/badge/tests-144%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
+[![coverage](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
+[![tests](https://img.shields.io/badge/tests-150%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
 [![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
 
 A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.

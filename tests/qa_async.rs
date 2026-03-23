@@ -256,3 +256,33 @@ async fn truncate_partial_segment_recovery() {
         assert!(wal.get(24).is_some(), "entry before truncate boundary should exist");
     }
 }
+
+// ========================================================================
+// Rewrite active segment preserves all entries after compact
+// ========================================================================
+
+#[tokio::test]
+async fn rewrite_active_preserves_entries_after_compact() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().to_path_buf();
+    {
+        let mut wal = AsyncRaftWal::open(&path).await.expect("open");
+        for i in 1..=20 {
+            wal.append(i, format!("e{i}").as_bytes()).await.expect("a");
+        }
+        wal.sync().await.expect("sync");
+        wal.compact(10).await.expect("compact");
+        wal.close().await.expect("close");
+    }
+    {
+        let wal = AsyncRaftWal::open(&path).await.expect("reopen");
+        assert_eq!(wal.first_index(), Some(11));
+        for i in 11..=20 {
+            assert_eq!(
+                wal.get(i).as_deref(),
+                Some(format!("e{i}").as_bytes()),
+                "entry {i} should survive"
+            );
+        }
+    }
+}
