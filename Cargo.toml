@@ -10,15 +10,19 @@ repository = "https://github.com/NyxStudio-Labs/raft-wal"
 readme = "README.md"
 
 [features]
-tokio = ["dep:tokio"]
+default = ["std"]
+std = ["dep:crc32c"]
+tokio = ["dep:tokio", "std"]
+io-uring = ["dep:tokio-uring", "std"]
 openraft-storage = ["dep:openraft", "dep:bitcode", "dep:serde", "tokio"]
 
 [dependencies]
-crc32c = "0.6"
+crc32c = { version = "0.6", optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "rt"], optional = true }
 openraft = { version = "0.9", features = ["serde", "storage-v2"], optional = true }
 bitcode = { version = "0.6", features = ["serde"], optional = true }
 serde = { version = "1", optional = true }
+tokio-uring = { version = "0.5", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

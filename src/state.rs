@@ -1,9 +1,21 @@
+#[cfg(not(feature = "std"))]
+use alloc::collections::{BTreeMap, VecDeque};
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use core::ops::{Bound, RangeBounds};
+
+#[cfg(feature = "std")]
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(feature = "std")]
 use std::ops::{Bound, RangeBounds};
 
 use crate::Entry;
 
 /// Shared in-memory state used by both sync and async WAL implementations.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) struct LogState {
     pub entries: VecDeque<Vec<u8>>,
     pub base_index: u64,
@@ -15,6 +27,7 @@ pub(crate) struct LogState {
     pub max_cache_entries: usize,
 }
 
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 impl LogState {
     pub fn new() -> Self {
         Self {
@@ -197,7 +210,7 @@ impl LogState {
     pub fn estimated_memory(&self) -> usize {
         self.entries
             .iter()
-            .map(|e| e.capacity() + std::mem::size_of::<Vec<u8>>())
+            .map(|e| e.capacity() + core::mem::size_of::<Vec<u8>>())
             .sum::<usize>()
             + self
                 .meta
@@ -226,7 +239,7 @@ impl LogState {
             if pos + klen > data.len() {
                 return;
             }
-            let key = match std::str::from_utf8(&data[pos..pos + klen]) {
+            let key = match core::str::from_utf8(&data[pos..pos + klen]) {
                 Ok(s) => s.to_string(),
                 Err(_) => return,
             };

@@ -1,3 +1,4 @@
+#![cfg(feature = "tokio")]
 //! QA tests for AsyncRaftWal (tokio).
 
 use raft_wal::AsyncRaftWal;
