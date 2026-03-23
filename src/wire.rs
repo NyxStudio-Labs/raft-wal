@@ -58,7 +58,17 @@ pub fn strip_segment_header(data: &[u8]) -> (u8, &[u8]) {
 }
 
 /// Serializes a single entry into the buffer.
+///
+/// # Panics
+///
+/// Panics if `entry.len() > u32::MAX` (4 GiB). Raft log entries should
+/// never be this large in practice.
 pub fn serialize_entry(buf: &mut Vec<u8>, index: u64, entry: &[u8]) {
+    assert!(
+        entry.len() <= u32::MAX as usize,
+        "entry payload exceeds u32::MAX ({} bytes)",
+        entry.len()
+    );
     let idx_bytes = index.to_le_bytes();
     let len_bytes = (entry.len() as u32).to_le_bytes();
 

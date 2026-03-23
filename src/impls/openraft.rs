@@ -18,8 +18,11 @@ const META_VOTE: &str = "openraft:vote";
 const META_COMMITTED: &str = "openraft:committed";
 const META_PURGED: &str = "openraft:purged";
 
+/// Serializes a value with bitcode. This should never fail for well-formed
+/// serde types; the expect is a safety net for broken Serialize impls.
+#[allow(clippy::unwrap_used)]
 fn ser<T: serde::Serialize>(v: &T) -> Vec<u8> {
-    bitcode::serialize(v).expect("serialization failed")
+    bitcode::serialize(v).expect("bitcode serialization of serde type should not fail")
 }
 
 fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
@@ -113,12 +116,15 @@ where
         })
     }
 
+    #[allow(clippy::unwrap_used)]
     async fn get_log_reader(&mut self) -> Self::LogReader {
-        // Open a separate read-only WAL instance. This is used by openraft
-        // for snapshot building and does not share mutable state with the writer.
+        // Open a separate read-only WAL instance for snapshot building.
+        // The trait signature does not return Result, so we must panic on
+        // failure. In practice this only fails if the directory was deleted
+        // or permissions changed while the WAL was open.
         let wal = AsyncRaftWal::open(&self.dir_path)
             .await
-            .expect("failed to open log reader WAL");
+            .expect("failed to open log reader WAL — directory may have been deleted");
         OpenRaftLogStorage::new(wal)
     }
 

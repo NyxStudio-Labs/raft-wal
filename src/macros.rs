@@ -129,4 +129,3 @@ macro_rules! append_batch_to_buf {
         }
     }};
 }
-

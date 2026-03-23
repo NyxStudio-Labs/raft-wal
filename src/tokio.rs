@@ -1,6 +1,5 @@
 //! Async WAL backed by Tokio.
 
-use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 
 use ::tokio::io::AsyncWriteExt;
@@ -8,7 +7,7 @@ use ::tokio::io::AsyncWriteExt;
 use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
 use crate::wire::{parse_entries_with_offsets, segment_header, strip_segment_header};
 use crate::state::LogState;
-use crate::{Entry, Result};
+use crate::Result;
 
 const FLUSH_THRESHOLD: usize = 64 * 1024;
 
@@ -273,6 +272,8 @@ impl AsyncRaftWal {
     async fn rotate_segment(&mut self) -> Result<()> {
         self.flush_buf().await?;
         self.wal_file.flush().await?;
+        // Sync active segment to disk before sealing
+        self.wal_file.sync_data().await?;
 
         let sealed_meta = self.active_meta.clone();
         let next_index = self.active_meta.last_index + 1;
@@ -310,6 +311,11 @@ impl AsyncRaftWal {
         let tmp_path = self.dir_path.join("active.tmp");
 
         ::tokio::fs::write(&tmp_path, &buf).await?;
+        // Sync tmp file before rename for crash safety
+        {
+            let f = ::tokio::fs::File::open(&tmp_path).await?;
+            f.sync_all().await?;
+        }
 
         self.wal_file.flush().await?;
         self.wal_file.shutdown().await?;
@@ -318,6 +324,11 @@ impl AsyncRaftWal {
             let _ = ::tokio::fs::remove_file(&self.active_meta.path).await;
         }
         ::tokio::fs::rename(&tmp_path, &new_path).await?;
+        // Sync directory for durable rename
+        {
+            let dir = ::tokio::fs::File::open(&self.dir_path).await?;
+            dir.sync_all().await?;
+        }
 
         self.wal_file = ::tokio::fs::OpenOptions::new()
             .append(true)
@@ -343,6 +354,9 @@ impl AsyncRaftWal {
         file.sync_all().await?;
         drop(file);
         ::tokio::fs::rename(&tmp_path, &self.meta_path).await?;
+        // Sync directory to ensure rename is durable on crash
+        let dir = ::tokio::fs::File::open(&self.dir_path).await?;
+        dir.sync_all().await?;
         Ok(())
     }
 }

@@ -84,7 +84,12 @@ impl WalStorage for StdStorage {
     }
 
     fn rename_file(&mut self, from: &str, to: &str) -> Result<(), Self::Error> {
-        fs::rename(self.path(from), self.path(to))
+        fs::rename(self.path(from), self.path(to))?;
+        // Sync the directory to ensure the rename is durable on crash.
+        // Without this, ext4 with data=ordered may lose the rename.
+        let dir = fs::File::open(&self.dir)?;
+        dir.sync_all()?;
+        Ok(())
     }
 
     fn file_size(&self, name: &str) -> Result<u64, Self::Error> {
