@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
 [![CI](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml/badge.svg)](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
-[![tests](https://img.shields.io/badge/tests-132%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
+[![tests](https://img.shields.io/badge/tests-135%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
 [![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
 
 A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
@@ -14,27 +14,46 @@ General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Ra
 ## Features
 
 - **Fast** — ~210ns append (with HW-accelerated CRC32C), ~1ns get (O(1) via `VecDeque`)
-- **Minimal dependencies** — only `crc32c` required; `tokio` and `openraft` are optional
-- **Sync & async** — `RaftWal` and `AsyncRaftWal` share the same optimized core
+- **no_std support** — `WalStorage` trait for pluggable backends (SPI flash, EEPROM, in-memory). CRC32C has a software fallback for `no_std`.
+- **WASM / WASI P2** — builds for `wasm32-wasip2` with full filesystem access
+- **io_uring** — optional `UringRaftWal` for Linux kernel-bypass async I/O
+- **Sync & async** — `RaftWal`, `AsyncRaftWal`, and `GenericRaftWal<S>` for custom backends
 - **Raft-correct durability** — metadata (term/vote) is always fsynced; log entries are buffered with opt-in `sync()`
 - **Integrity** — every entry is protected by a CRC32C checksum; corrupted or partial writes are detected on recovery
 - **Segment-based storage** — log is split into segment files (default 64 MB); `compact()` deletes old segments without rewriting
 - **Parallel recovery** — segment files are read and CRC-verified in parallel across CPU cores
+- **Memory-bounded** — `set_max_cache_entries()` limits in-memory entries; evicted entries are read from disk transparently
 - **openraft integration** — optional `RaftLogStorage` trait implementation
-- **Cross-platform** — Linux, macOS, Windows
+- **Cross-platform** — Linux, macOS, Windows, WASI
 
 ## Usage
 
 ```toml
 [dependencies]
-raft-wal = "0.4"
+raft-wal = "0.5"
 
-# For async support:
-# raft-wal = { version = "0.4", features = ["tokio"] }
+# Async (tokio):
+# raft-wal = { version = "0.5", features = ["tokio"] }
 
-# For openraft integration:
-# raft-wal = { version = "0.4", features = ["openraft-storage"] }
+# io_uring (Linux):
+# raft-wal = { version = "0.5", features = ["io-uring"] }
+
+# openraft integration:
+# raft-wal = { version = "0.5", features = ["openraft-storage"] }
+
+# no_std (custom backend):
+# raft-wal = { version = "0.5", default-features = false }
 ```
+
+### Feature matrix
+
+| Feature | Default | Description |
+|---|---|---|
+| `std` | yes | Filesystem backend (`RaftWal`) |
+| `tokio` | no | Async WAL (`AsyncRaftWal`) |
+| `io-uring` | no | Linux io_uring backend (`UringRaftWal`) |
+| `openraft-storage` | no | openraft 0.9 `RaftLogStorage` impl |
+| (no default features) | — | `no_std` + `alloc`: `GenericRaftWal<S>`, `WalStorage` trait |
 
 ```rust
 use raft_wal::RaftWal;
@@ -166,7 +185,9 @@ cargo bench --bench wal_async --features tokio
 - **Buffered writes**: 64 KB `BufWriter` (sync) or userspace buffer (async) — syscalls only when the buffer fills
 - **Parallel recovery**: segment files are read and CRC-verified concurrently using one thread per CPU core (`std::thread::scope`) or `tokio::spawn` (async)
 - **Atomic metadata**: `set_meta` writes to a temp file, fsyncs, then renames — crash-safe
-- **CRC32C**: hardware-accelerated via the `crc32c` crate (SSE4.2 on x86, ARM CRC on aarch64, software fallback elsewhere)
+- **CRC32C**: hardware-accelerated via the `crc32c` crate (SSE4.2 on x86, ARM CRC on aarch64); software lookup-table fallback in `no_std`
+- **Pluggable storage**: `WalStorage` trait abstracts file I/O. `StdStorage` (default) uses `std::fs`. Implement your own for embedded, WASM, or custom storage backends.
+- **Platform targets**: `x86_64`, `aarch64`, `wasm32-wasip2` verified. `io_uring` for Linux kernel-bypass I/O.
 
 ## Status
 
