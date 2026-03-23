@@ -43,6 +43,7 @@ pub mod wire;
 
 #[macro_use]
 pub(crate) mod macros;
+pub(crate) mod core;
 
 #[cfg(feature = "std")]
 pub(crate) mod segment;
