@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Regression tests for identified bugs and edge cases.
 //!
 //! Each test is tagged with the issue number from the code review:
@@ -111,7 +112,7 @@ impl FailOnRemoveStorage {
 }
 
 #[derive(Debug)]
-struct TestError(String);
+struct TestError(#[allow(dead_code)] String);
 
 impl WalStorage for FailOnRemoveStorage {
     type Error = TestError;

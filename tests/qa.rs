@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! QA tests — happy path + reverse/edge cases for RaftWal (sync).
 
 use raft_wal::RaftWal;
@@ -796,7 +797,7 @@ fn cache_eviction_basic() {
     let dir = tempfile::tempdir().unwrap();
     let mut wal = open(dir.path());
     wal.set_max_segment_size(200); // small segments so sealed entries exist
-    wal.set_max_cache_entries(10);
+    wal.set_max_cache_entries(10).unwrap();
 
     for i in 1..=50 {
         wal.append(i, format!("e{i}").as_bytes()).unwrap();
@@ -826,7 +827,7 @@ fn cache_eviction_reduces_memory() {
     }
     let mem_all = wal.estimated_memory();
 
-    wal.set_max_cache_entries(100);
+    wal.set_max_cache_entries(100).unwrap();
     let mem_limited = wal.estimated_memory();
 
     assert!(
@@ -841,7 +842,7 @@ fn cache_eviction_with_recovery() {
     let path = dir.path().to_path_buf();
     {
         let mut wal = open(&path);
-        wal.set_max_cache_entries(5);
+        wal.set_max_cache_entries(5).unwrap();
         for i in 1..=20 {
             wal.append(i, format!("e{i}").as_bytes()).unwrap();
         }
@@ -860,7 +861,7 @@ fn cache_eviction_disk_fallback_after_segment_rotation() {
     let dir = tempfile::tempdir().unwrap();
     let mut wal = open(dir.path());
     wal.set_max_segment_size(200);
-    wal.set_max_cache_entries(10);
+    wal.set_max_cache_entries(10).unwrap();
 
     for i in 1..=50 {
         wal.append(i, format!("e{i}").as_bytes()).unwrap();

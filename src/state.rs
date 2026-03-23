@@ -28,7 +28,7 @@ pub(crate) struct LogState {
     pub entries: VecDeque<Vec<u8>>,
     pub base_index: u64,
     /// Index of the first entry that's actually cached in memory.
-    /// Entries between base_index and cache_start_index are evicted
+    /// Entries between `base_index` and `cache_start_index` are evicted
     /// (empty Vec in the deque) but still on disk.
     pub cache_start_index: u64,
     pub meta: BTreeMap<String, Vec<u8>>,
@@ -67,6 +67,8 @@ impl LogState {
         if index < self.base_index {
             return;
         }
+        // Index offsets are bounded by entries.len() which fits in usize
+        #[allow(clippy::cast_possible_truncation)]
         let slot = (index - self.base_index) as usize;
         if slot >= self.entries.len() {
             self.entries.resize(slot + 1, Vec::new());
@@ -83,10 +85,11 @@ impl LogState {
         }
     }
 
-    /// Evicts oldest cached entries to stay within max_cache_entries.
-    /// Evicted entries are replaced with empty Vecs (still on disk).
+    /// Evicts oldest cached entries to stay within `max_cache_entries`.
+    /// Evicted entries are replaced with empty `Vec`s (still on disk).
     /// `protect_from` is the first index of the active segment — entries
     /// at or after this index are never evicted (they may not be flushed yet).
+    #[allow(clippy::cast_possible_truncation)]
     pub fn evict_if_needed_until(&mut self, protect_from: u64) {
         if self.max_cache_entries == usize::MAX {
             return;
@@ -128,6 +131,8 @@ impl LogState {
         if index < self.base_index {
             return None;
         }
+        // Index offsets are bounded by entries.len() which fits in usize
+        #[allow(clippy::cast_possible_truncation)]
         let slot = (index - self.base_index) as usize;
         self.entries.get(slot).and_then(|v| {
             if is_evicted(v) {
@@ -147,6 +152,7 @@ impl LogState {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn last_index(&self) -> Option<u64> {
         if self.entries.is_empty() {
             None
@@ -164,6 +170,7 @@ impl LogState {
     }
 
     /// Returns true if entries were actually removed.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn compact(&mut self, up_to_inclusive: u64) -> bool {
         if self.entries.is_empty() || up_to_inclusive < self.base_index {
             return false;
@@ -175,6 +182,7 @@ impl LogState {
     }
 
     /// Returns true if entries were actually removed.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn truncate(&mut self, from_inclusive: u64) -> bool {
         if self.entries.is_empty()
             || from_inclusive > self.base_index + self.entries.len() as u64 - 1
@@ -186,6 +194,7 @@ impl LogState {
         true
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn resolve_range<R: RangeBounds<u64>>(&self, range: &R) -> (usize, usize) {
         if self.entries.is_empty() {
             return (1, 0);
@@ -213,6 +222,7 @@ impl LogState {
         (start, end)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn iter(&self) -> impl Iterator<Item = Entry<'_>> {
         self.entries.iter().enumerate().filter_map(|(i, data)| {
             if is_evicted(data) {
@@ -226,6 +236,7 @@ impl LogState {
         })
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn iter_range<R: RangeBounds<u64>>(&self, range: R) -> impl Iterator<Item = Entry<'_>> {
         let (start, end) = self.resolve_range(&range);
         let base = self.base_index;
@@ -258,6 +269,7 @@ impl LogState {
     /// Parses metadata bytes.
     ///
     /// Format: `[u32 count][[u32 key_len][key bytes][u32 val_len][val bytes]]*`
+    #[allow(clippy::cast_possible_truncation)]
     pub fn recover_meta(&mut self, data: &[u8]) {
         let mut pos = 0;
         if pos + 4 > data.len() {
@@ -296,6 +308,7 @@ impl LogState {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn serialize_meta(&self) -> Vec<u8> {
         let total: usize = 4 + self
             .meta

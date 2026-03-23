@@ -1,7 +1,7 @@
 //! Shared macros and helper functions for WAL implementations.
 //!
 //! Eliminates code duplication across sync (`GenericRaftWal`),
-//! tokio (`AsyncRaftWal`), and io_uring (`UringRaftWal`) backends.
+//! tokio (`AsyncRaftWal`), and `io_uring` (`UringRaftWal`) backends.
 
 /// Generates read-only accessor methods that delegate to `self.state`.
 ///
@@ -24,6 +24,7 @@ macro_rules! impl_wal_accessors {
         }
 
         /// Returns entries within the given index range as owned pairs.
+        #[must_use]
         pub fn read_range<R: core::ops::RangeBounds<u64>>(
             &self,
             range: R,
@@ -35,38 +36,44 @@ macro_rules! impl_wal_accessors {
         }
 
         /// Returns the first (lowest) index in the log.
+        #[must_use]
         pub fn first_index(&self) -> Option<u64> {
             self.state.first_index()
         }
 
         /// Returns the last (highest) index in the log.
+        #[must_use]
         pub fn last_index(&self) -> Option<u64> {
             self.state.last_index()
         }
 
         /// Returns the number of entries in the log.
+        #[must_use]
         pub fn len(&self) -> usize {
             self.state.len()
         }
 
         /// Returns `true` if the log contains no entries.
+        #[must_use]
         pub fn is_empty(&self) -> bool {
             self.state.is_empty()
         }
 
         /// Estimated memory usage of in-memory entries and metadata in bytes.
+        #[must_use]
         pub fn estimated_memory(&self) -> usize {
             self.state.estimated_memory()
         }
 
         /// Returns the metadata value for the given key.
+        #[must_use]
         pub fn get_meta(&self, key: &str) -> Option<&[u8]> {
             self.state.meta.get(key).map(|v| v.as_slice())
         }
     };
 }
 
-/// Serializes a single entry into the write buffer and appends to disk_buf.
+/// Serializes a single entry into the write buffer and appends to `disk_buf`.
 ///
 /// Shared by all three backends. After this macro, the caller must handle
 /// flush/rotate (sync or async).
@@ -80,7 +87,7 @@ macro_rules! append_to_buf {
     }};
 }
 
-/// Serializes a batch of entries into the write buffer and appends to disk_buf.
+/// Serializes a batch of entries into the write buffer and appends to `disk_buf`.
 #[allow(unused_macros)]
 macro_rules! append_batch_to_buf {
     ($self:expr, $entries:expr) => {{

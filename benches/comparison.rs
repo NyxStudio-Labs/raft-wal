@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Comparison benchmarks: raft-wal vs sled vs redb vs rocksdb
 //!
 //! All benchmarks simulate Raft WAL usage patterns:
@@ -51,7 +52,7 @@ fn raft_wal_get(c: &mut Criterion) {
 
     c.bench_function("get/raft-wal", |b| {
         b.iter(|| {
-            wal.get(black_box(5_000));
+            let _ = wal.get(black_box(5_000));
         })
     });
 }

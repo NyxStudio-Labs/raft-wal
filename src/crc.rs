@@ -2,12 +2,14 @@
 //! software lookup table fallback for `no_std`.
 
 /// Computes CRC32C of the given data.
+#[must_use]
 #[cfg(feature = "std")]
 pub fn crc32c(data: &[u8]) -> u32 {
     ::crc32c::crc32c(data)
 }
 
 /// Appends data to an existing CRC32C computation.
+#[must_use]
 #[cfg(feature = "std")]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     ::crc32c::crc32c_append(crc, data)
@@ -39,12 +41,14 @@ const fn make_table() -> [u32; 256] {
 static TABLE: [u32; 256] = make_table();
 
 /// Computes CRC32C of the given data (software fallback).
+#[must_use]
 #[cfg(not(feature = "std"))]
 pub fn crc32c(data: &[u8]) -> u32 {
     crc32c_append(0, data)
 }
 
 /// Appends data to an existing CRC32C computation (software fallback).
+#[must_use]
 #[cfg(not(feature = "std"))]
 pub fn crc32c_append(init: u32, data: &[u8]) -> u32 {
     let mut crc = !init;

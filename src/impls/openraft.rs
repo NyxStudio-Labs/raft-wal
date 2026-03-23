@@ -53,6 +53,7 @@ pub struct OpenRaftLogStorage<C: RaftTypeConfig> {
 
 impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
     /// Creates a new storage backed by the given [`AsyncRaftWal`].
+    #[must_use]
     pub fn new(wal: AsyncRaftWal) -> Self {
         let dir_path = wal.dir_path().to_path_buf();
         Self {
@@ -63,11 +64,16 @@ impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
     }
 
     /// Opens or creates storage in the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL cannot be opened or created.
     pub async fn open(data_dir: impl AsRef<std::path::Path>) -> crate::Result<Self> {
         Ok(Self::new(AsyncRaftWal::open(data_dir).await?))
     }
 
     /// Returns a mutable reference to the underlying [`AsyncRaftWal`].
+    #[must_use]
     pub fn wal_mut(&mut self) -> &mut AsyncRaftWal {
         &mut self.wal
     }

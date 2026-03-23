@@ -131,6 +131,11 @@ pub type RaftWal = GenericRaftWal<StdStorage>;
 #[cfg(feature = "std")]
 impl RaftWal {
     /// Opens or creates a WAL in the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created or existing
+    /// segments cannot be recovered.
     pub fn open(data_dir: impl AsRef<std::path::Path>) -> Result<Self> {
         let storage = StdStorage::new(data_dir)?;
         GenericRaftWal::new(storage).map_err(WalError::Io)
@@ -140,6 +145,7 @@ impl RaftWal {
     ///
     /// Returns `Cow::Borrowed` for cached (in-memory) entries and
     /// `Cow::Owned` for evicted entries read from disk.
+    #[must_use]
     pub fn get(&self, index: u64) -> Option<std::borrow::Cow<'_, [u8]>> {
         if let Some(data) = self.get_cached(index) {
             return Some(std::borrow::Cow::Borrowed(data));

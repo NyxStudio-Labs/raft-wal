@@ -22,12 +22,12 @@ pub(crate) fn segment_path(dir: &Path, first_index: u64) -> PathBuf {
     dir.join(format!("{first_index:020}.seg"))
 }
 
-/// Lists all segment files in a directory, sorted by first_index.
+/// Lists all segment files in a directory, sorted by `first_index`.
 pub(crate) fn list_segments(dir: &Path) -> Vec<PathBuf> {
     let mut segs: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("seg"))
         .collect();

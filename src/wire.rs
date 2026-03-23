@@ -34,6 +34,7 @@ pub const SEGMENT_VERSION: u8 = 1;
 pub const SEGMENT_HEADER_SIZE: usize = 5;
 
 /// Returns the segment header bytes for the current version.
+#[must_use]
 pub fn segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
     [
         SEGMENT_MAGIC[0],
@@ -49,6 +50,7 @@ pub fn segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
 /// Returns `(version, entry_data)`:
 /// - Versioned segment: `(version, &data[5..])`
 /// - Legacy segment (v0): `(0, data)` (unchanged)
+#[must_use]
 pub fn strip_segment_header(data: &[u8]) -> (u8, &[u8]) {
     if data.len() >= SEGMENT_HEADER_SIZE && data[..4] == SEGMENT_MAGIC {
         (data[4], &data[SEGMENT_HEADER_SIZE..])
@@ -65,11 +67,13 @@ pub fn strip_segment_header(data: &[u8]) -> (u8, &[u8]) {
 /// never be this large in practice.
 pub fn serialize_entry(buf: &mut Vec<u8>, index: u64, entry: &[u8]) {
     assert!(
-        entry.len() <= u32::MAX as usize,
+        u32::try_from(entry.len()).is_ok(),
         "entry payload exceeds u32::MAX ({} bytes)",
         entry.len()
     );
     let idx_bytes = index.to_le_bytes();
+    // Length validated above by try_from check
+    #[allow(clippy::cast_possible_truncation)]
     let len_bytes = (entry.len() as u32).to_le_bytes();
 
     let crc = crc32c_append(
@@ -85,6 +89,12 @@ pub fn serialize_entry(buf: &mut Vec<u8>, index: u64, entry: &[u8]) {
 
 /// Parses entries from raw segment bytes.
 /// Stops at the first corrupted or incomplete entry.
+///
+/// # Panics
+///
+/// Panics if internal slice-to-array conversions fail, which cannot
+/// happen when the length checks in the loop are satisfied.
+#[must_use]
 pub fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
     let mut entries = Vec::new();
     let mut pos = 0;
@@ -92,6 +102,8 @@ pub fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
     while pos + ENTRY_HEADER_SIZE <= data.len() {
         let crc_stored = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
         let index = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
+        // Payload length is at most u32::MAX, which always fits in usize on 32-bit+
+        #[allow(clippy::cast_possible_truncation)]
         let plen =
             u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes")) as usize;
 
@@ -119,6 +131,12 @@ pub fn parse_entries(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
 /// Returns `(index, payload, byte_offset, total_size)` for each entry,
 /// where `byte_offset` is relative to the start of `data` and
 /// `total_size = ENTRY_HEADER_SIZE + payload.len()`.
+///
+/// # Panics
+///
+/// Panics if internal slice-to-array conversions fail, which cannot
+/// happen when the length checks in the loop are satisfied.
+#[must_use]
 pub fn parse_entries_with_offsets(data: &[u8]) -> Vec<(u64, Vec<u8>, usize, usize)> {
     let mut entries = Vec::new();
     let mut pos = 0;
@@ -127,6 +145,8 @@ pub fn parse_entries_with_offsets(data: &[u8]) -> Vec<(u64, Vec<u8>, usize, usiz
         let entry_start = pos;
         let crc_stored = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
         let index = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
+        // Payload length is at most u32::MAX, which always fits in usize on 32-bit+
+        #[allow(clippy::cast_possible_truncation)]
         let plen =
             u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes")) as usize;
 
@@ -151,12 +171,20 @@ pub fn parse_entries_with_offsets(data: &[u8]) -> Vec<(u64, Vec<u8>, usize, usiz
 }
 
 /// Reads a single entry by index from raw segment bytes.
-/// Returns None if not found or corrupted.
+/// Returns `None` if not found or corrupted.
+///
+/// # Panics
+///
+/// Panics if internal slice-to-array conversions fail, which cannot
+/// happen when the length checks in the loop are satisfied.
+#[must_use]
 pub fn find_entry_in_data(data: &[u8], target: u64) -> Option<Vec<u8>> {
     let mut pos = 0;
     while pos + ENTRY_HEADER_SIZE <= data.len() {
         let crc_stored = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes"));
         let index = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().expect("8 bytes"));
+        // Payload length is at most u32::MAX, which always fits in usize on 32-bit+
+        #[allow(clippy::cast_possible_truncation)]
         let plen =
             u32::from_le_bytes(data[pos + 12..pos + 16].try_into().expect("4 bytes")) as usize;
 

@@ -42,7 +42,18 @@ pub struct AsyncRaftWal {
 
 impl AsyncRaftWal {
     /// Opens or creates a WAL in the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created or existing
+    /// segments cannot be recovered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a spawned segment reader task panics.
     pub async fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
+        type SegResult = std::io::Result<(PathBuf, Vec<(u64, Vec<u8>)>)>;
+
         let dir = data_dir.as_ref();
         ::tokio::fs::create_dir_all(dir).await?;
 
@@ -51,9 +62,7 @@ impl AsyncRaftWal {
 
         // Recover segments — read + parse + CRC verify concurrently
         let seg_paths = list_segments(dir);
-        type SegResult = std::io::Result<(PathBuf, Vec<(u64, Vec<u8>)>)>;
-        let mut handles: Vec<::tokio::task::JoinHandle<SegResult>> =
-            Vec::with_capacity(seg_paths.len());
+        let mut handles: Vec<::tokio::task::JoinHandle<SegResult>> = Vec::with_capacity(seg_paths.len());
         for path in seg_paths {
             handles.push(::tokio::spawn(async move {
                 let raw = ::tokio::fs::read(&path).await?;
@@ -89,7 +98,7 @@ impl AsyncRaftWal {
             state.recover_meta(&data);
         }
 
-        let next_index = state.last_index().map(|i| i + 1).unwrap_or(1);
+        let next_index = state.last_index().map_or(1, |i| i + 1);
         let active_path = segment_path(dir, next_index);
         let is_new = !active_path.exists();
         let mut wal_file = ::tokio::fs::OpenOptions::new()
@@ -104,7 +113,9 @@ impl AsyncRaftWal {
             wal_file.flush().await?;
             hdr.len()
         } else {
-            wal_file.metadata().await?.len() as usize
+            // File sizes are always well within usize range for WAL segments
+            #[allow(clippy::cast_possible_truncation)]
+            { wal_file.metadata().await?.len() as usize }
         };
 
         Ok(Self {
@@ -126,6 +137,10 @@ impl AsyncRaftWal {
     }
 
     /// Appends a single log entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O operations fail.
     pub async fn append(&mut self, index: u64, entry: &[u8]) -> Result<()> {
         append_to_buf!(self, index, entry);
         self.active_meta.last_index = index;
@@ -140,6 +155,10 @@ impl AsyncRaftWal {
     }
 
     /// Appends multiple log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O operations fail.
     pub async fn append_batch<V: AsRef<[u8]>>(&mut self, entries: &[(u64, V)]) -> Result<()> {
         append_batch_to_buf!(self, entries);
         if let Some((idx, _)) = entries.last() {
@@ -158,16 +177,22 @@ impl AsyncRaftWal {
     impl_wal_accessors!();
 
     /// Returns the entry at the given index.
+    #[must_use]
     pub fn get(&self, index: u64) -> Option<&[u8]> {
         self.state.get(index)
     }
 
     /// Returns the directory path this WAL is stored in.
+    #[must_use]
     pub fn dir_path(&self) -> &Path {
         &self.dir_path
     }
 
     /// Discards all entries with index <= `up_to_inclusive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O operations fail.
     pub async fn compact(&mut self, up_to_inclusive: u64) -> Result<()> {
         if !self.state.compact(up_to_inclusive) {
             return Ok(());
@@ -218,6 +243,10 @@ impl AsyncRaftWal {
     }
 
     /// Discards all entries with index >= `from_inclusive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O operations fail.
     pub async fn truncate(&mut self, from_inclusive: u64) -> Result<()> {
         if !self.state.truncate(from_inclusive) {
             return Ok(());
@@ -265,18 +294,30 @@ impl AsyncRaftWal {
     }
 
     /// Stores a metadata key-value pair. Always fsynced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the metadata fails.
     pub async fn set_meta(&mut self, key: &str, value: &[u8]) -> Result<()> {
         self.state.meta.insert(key.to_string(), value.to_vec());
         self.save_meta().await
     }
 
     /// Removes a metadata key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the metadata fails.
     pub async fn remove_meta(&mut self, key: &str) -> Result<()> {
         self.state.meta.remove(key);
         self.save_meta().await
     }
 
     /// Flushes buffered writes to the OS (without fsync).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush operation fails.
     pub async fn flush(&mut self) -> Result<()> {
         self.flush_buf().await?;
         self.wal_file.flush().await?;
@@ -284,6 +325,10 @@ impl AsyncRaftWal {
     }
 
     /// Flushes buffered writes and fsyncs data to stable storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush or sync operation fails.
     pub async fn sync(&mut self) -> Result<()> {
         self.flush_buf().await?;
         self.wal_file.flush().await?;
@@ -292,6 +337,10 @@ impl AsyncRaftWal {
     }
 
     /// Flushes and shuts down the WAL writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush, sync, or shutdown operation fails.
     pub async fn close(mut self) -> Result<()> {
         self.sync().await?;
         self.wal_file.shutdown().await?;
@@ -539,8 +588,8 @@ mod tests {
         }
         wal.sync().await.expect("sync");
         assert_eq!(wal.len(), 200);
-        assert_eq!(wal.get(1).as_deref(), Some([0u8; 512].as_slice()));
-        assert_eq!(wal.get(200).as_deref(), Some([0u8; 512].as_slice()));
+        assert_eq!(wal.get(1), Some([0u8; 512].as_slice()));
+        assert_eq!(wal.get(200), Some([0u8; 512].as_slice()));
     }
 
     #[::tokio::test]

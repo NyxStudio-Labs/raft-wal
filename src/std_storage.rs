@@ -16,6 +16,10 @@ impl StdStorage {
     /// Creates a new `StdStorage` rooted at the given directory.
     ///
     /// The directory is created if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created.
     pub fn new(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
@@ -27,6 +31,7 @@ impl StdStorage {
     }
 
     /// Returns the directory path this storage is rooted at.
+    #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -61,7 +66,7 @@ impl WalStorage for StdStorage {
 
     fn list_files(&self, suffix: &str) -> Result<Vec<String>, Self::Error> {
         let mut names: Vec<String> = fs::read_dir(&self.dir)?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if name.ends_with(suffix) {
@@ -103,6 +108,7 @@ impl WalStorage for StdStorage {
     fn read_file_range(&self, name: &str, offset: usize, len: usize) -> Result<Vec<u8>, Self::Error> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = fs::File::open(self.path(name))?;
+        #[allow(clippy::cast_possible_truncation)]
         file.seek(SeekFrom::Start(offset as u64))?;
         let mut buf = vec![0u8; len];
         file.read_exact(&mut buf)?;

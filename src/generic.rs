@@ -65,7 +65,7 @@ pub struct GenericRaftWal<S: WalStorage> {
     pub(crate) max_segment_size: usize,
     write_buf: Vec<u8>,
     /// Entry offsets for the active segment, built incrementally during append.
-    /// Each entry: (index, byte_offset_in_file, total_entry_size).
+    /// Each entry: (index, `byte_offset_in_file`, `total_entry_size`).
     active_offsets: Vec<(u64, usize, usize)>,
 }
 
@@ -73,6 +73,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     /// Opens or creates a WAL using the given storage backend.
     ///
     /// Recovers existing segments and metadata from storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operations fail.
     pub fn new(mut storage: S) -> Result<Self, S::Error> {
         let mut state = LogState::new();
 
@@ -110,10 +114,12 @@ impl<S: WalStorage> GenericRaftWal<S> {
         }
 
         // Create or open active segment
-        let next_index = state.last_index().map(|i| i + 1).unwrap_or(1);
+        let next_index = state.last_index().map_or(1, |i| i + 1);
         let active_name = segment_name(next_index);
         let active_bytes = if storage.file_exists(&active_name) {
-            storage.file_size(&active_name)? as usize
+            // File sizes are always well within usize range for WAL segments
+            #[allow(clippy::cast_possible_truncation)]
+            { storage.file_size(&active_name)? as usize }
         } else {
             // Create with version header
             let hdr = segment_header();
@@ -137,6 +143,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     /// Appends a single log entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operations fail.
     pub fn append(&mut self, index: u64, entry: &[u8]) -> Result<(), S::Error> {
         // Record offset before serializing
         let entry_offset = self.active_bytes;
@@ -149,6 +159,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     /// Appends multiple log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operations fail.
     pub fn append_batch<V: AsRef<[u8]>>(&mut self, entries: &[(u64, V)]) -> Result<(), S::Error> {
         // Record per-entry offsets for the offset map
         for (index, entry) in entries {
@@ -168,12 +182,17 @@ impl<S: WalStorage> GenericRaftWal<S> {
 
     /// Returns the cached entry at the given index, or `None` if evicted
     /// or out of range.
+    #[must_use]
     pub fn get_cached(&self, index: u64) -> Option<&[u8]> {
         self.state.get(index)
     }
 
     /// Reads the entry at the given index, falling back to disk if not
     /// in cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading from disk fails.
     pub fn get_or_read(&self, index: u64) -> Result<Option<Vec<u8>>, S::Error> {
         if let Some(data) = self.state.get(index) {
             return Ok(Some(data.to_vec()));
@@ -184,6 +203,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     /// Sets the maximum number of entries to keep in the in-memory cache.
     ///
     /// Flushes any buffered writes first so evicted entries are on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing buffered writes fails.
     pub fn set_max_cache_entries(&mut self, max: usize) -> Result<(), S::Error> {
         self.state.max_cache_entries = max;
         // Flush so all entries are on disk before evicting
@@ -198,6 +221,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     /// Discards all entries with index <= `up_to_inclusive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operations fail.
     pub fn compact(&mut self, up_to_inclusive: u64) -> Result<(), S::Error> {
         if !self.state.compact(up_to_inclusive) {
             return Ok(());
@@ -246,6 +273,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     /// Discards all entries with index >= `from_inclusive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operations fail.
     pub fn truncate(&mut self, from_inclusive: u64) -> Result<(), S::Error> {
         if !self.state.truncate(from_inclusive) {
             return Ok(());
@@ -292,34 +323,52 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     /// Stores a metadata key-value pair. Always synced to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the metadata fails.
     pub fn set_meta(&mut self, key: &str, value: &[u8]) -> Result<(), S::Error> {
         self.state.meta.insert(key.to_string(), value.to_vec());
         self.save_meta()
     }
 
     /// Removes a metadata key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the metadata fails.
     pub fn remove_meta(&mut self, key: &str) -> Result<(), S::Error> {
         self.state.meta.remove(key);
         self.save_meta()
     }
 
     /// Flushes buffered writes to storage (without sync).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush operation fails.
     pub fn flush(&mut self) -> Result<(), S::Error> {
         self.flush_buf()
     }
 
     /// Flushes buffered writes and syncs to durable storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush or sync operation fails.
     pub fn sync(&mut self) -> Result<(), S::Error> {
         self.flush_buf()?;
         self.storage.sync_file(&self.active_name)
     }
 
     /// Returns a reference to the underlying storage.
+    #[must_use]
     pub fn storage(&self) -> &S {
         &self.storage
     }
 
     /// Returns a mutable reference to the underlying storage.
+    #[must_use]
     pub fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }

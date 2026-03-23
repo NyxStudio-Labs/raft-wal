@@ -1,4 +1,4 @@
-//! Pure logic functions shared by all WAL backends (sync, tokio, io_uring).
+//! Pure logic functions shared by all WAL backends (sync, tokio, `io_uring`).
 //!
 //! These functions contain ZERO I/O — they take raw data in and return
 //! processed buffers out. Each backend reads data (sync or async), calls
@@ -39,7 +39,7 @@ pub(crate) fn rewrite_segment_keeping(
 /// entries with on-disk entries (for evicted entries that are only on disk).
 ///
 /// `existing_disk_entries` should be parsed from the current active segment
-/// file (and any unflushed disk_buf). This ensures evicted entries aren't
+/// file (and any unflushed `disk_buf`). This ensures evicted entries aren't
 /// lost during rewrite.
 ///
 /// Returns `(first_active_index, segment_buffer_with_header)`.
@@ -52,8 +52,7 @@ pub(crate) fn build_active_rewrite(
         1
     } else {
         sealed_last_index
-            .map(|i| i + 1)
-            .unwrap_or(state.base_index)
+            .map_or(state.base_index, |i| i + 1)
     };
 
     let hdr = segment_header();
@@ -84,10 +83,10 @@ pub(crate) fn build_active_rewrite(
 /// and segment rewriting.
 #[allow(clippy::type_complexity)]
 pub(crate) fn parse_segment(raw: &[u8]) -> (u8, usize, Vec<(u64, Vec<u8>, usize, usize)>) {
-    let (_ver, entry_data) = strip_segment_header(raw);
+    let (ver, entry_data) = strip_segment_header(raw);
     let header_len = raw.len() - entry_data.len();
     let entries = parse_entries_with_offsets(entry_data);
-    (_ver, header_len, entries)
+    (ver, header_len, entries)
 }
 
 #[cfg(test)]

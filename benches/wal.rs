@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -74,7 +75,7 @@ fn bench_get(c: &mut Criterion) {
 
     c.bench_function("get", |b| {
         b.iter(|| {
-            wal.get(black_box(5_000));
+            let _ = wal.get(black_box(5_000));
         })
     });
 }
@@ -88,7 +89,7 @@ fn bench_read_range(c: &mut Criterion) {
 
     c.bench_function("read_range_100", |b| {
         b.iter(|| {
-            wal.read_range(black_box(4_950..=5_050));
+            let _ = wal.read_range(black_box(4_950..=5_050));
         })
     });
 }

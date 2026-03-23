@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -54,7 +55,7 @@ fn bench_async_get(c: &mut Criterion) {
 
     c.bench_function("async_get", |b| {
         b.iter(|| {
-            wal.get(black_box(5_000));
+            let _ = wal.get(black_box(5_000));
         })
     });
 }

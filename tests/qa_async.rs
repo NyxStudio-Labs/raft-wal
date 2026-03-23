@@ -1,4 +1,5 @@
 #![cfg(feature = "tokio")]
+#![allow(clippy::pedantic)]
 //! Async-specific QA tests for AsyncRaftWal.
 //!
 //! Logic tests (append, get, iter, compact, truncate) are covered by
@@ -44,7 +45,7 @@ async fn recovery_after_close() {
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.len(), 2);
-        assert_eq!(wal.get(2).as_deref(), Some(b"b".as_slice()));
+        assert_eq!(wal.get(2), Some(b"b".as_slice()));
         assert_eq!(wal.get_meta("vote"), Some(b"v1".as_slice()));
     }
 }
@@ -65,7 +66,7 @@ async fn recovery_after_compact() {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.len(), 3);
         assert_eq!(wal.first_index(), Some(8));
-        assert_eq!(wal.get(8).as_deref(), Some(b"e8".as_slice()));
+        assert_eq!(wal.get(8), Some(b"e8".as_slice()));
         assert!(wal.get(7).is_none());
     }
 }
@@ -103,7 +104,7 @@ async fn flush_persists_on_reopen() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1).as_deref(), Some(b"buffered".as_slice()));
+        assert_eq!(wal.get(1), Some(b"buffered".as_slice()));
     }
 }
 
@@ -118,7 +119,7 @@ async fn sync_persists_on_reopen() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1).as_deref(), Some(b"durable".as_slice()));
+        assert_eq!(wal.get(1), Some(b"durable".as_slice()));
     }
 }
 
@@ -133,7 +134,7 @@ async fn close_guarantees_durability() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1).as_deref(), Some(b"closed".as_slice()));
+        assert_eq!(wal.get(1), Some(b"closed".as_slice()));
     }
 }
 
@@ -162,7 +163,7 @@ async fn corrupt_crc_recovery() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
+        assert_eq!(wal.get(1), Some(b"good".as_slice()));
         assert!(wal.get(2).is_none());
     }
 }
@@ -183,7 +184,7 @@ async fn large_entry_recovery() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1).as_deref().map(|s| s.len()), Some(big.len()));
+        assert_eq!(wal.get(1).map(|s| s.len()), Some(big.len()));
     }
 }
 
@@ -205,7 +206,7 @@ async fn recovery_without_close() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert!(wal.len() > 0, "should recover flushed entries");
+        assert!(!wal.is_empty(), "should recover flushed entries");
     }
 }
 
@@ -279,7 +280,7 @@ async fn rewrite_active_preserves_entries_after_compact() {
         assert_eq!(wal.first_index(), Some(11));
         for i in 11..=20 {
             assert_eq!(
-                wal.get(i).as_deref(),
+                wal.get(i),
                 Some(format!("e{i}").as_bytes()),
                 "entry {i} should survive"
             );

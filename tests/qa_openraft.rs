@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Compile-time QA for OpenRaftLogStorage (openraft 0.9).
 //!
 //! Verifies that OpenRaftLogStorage correctly implements RaftLogStorage
