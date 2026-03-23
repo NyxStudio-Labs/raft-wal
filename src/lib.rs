@@ -41,6 +41,9 @@ pub mod crc;
 /// Wire format serialization and parsing (no_std compatible).
 pub mod wire;
 
+#[macro_use]
+pub(crate) mod macros;
+
 #[cfg(feature = "std")]
 pub(crate) mod segment;
 pub(crate) mod state;

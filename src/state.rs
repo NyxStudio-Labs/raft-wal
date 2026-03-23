@@ -19,12 +19,18 @@ use crate::Entry;
 pub(crate) struct LogState {
     pub entries: VecDeque<Vec<u8>>,
     pub base_index: u64,
+    /// The first logical index in the WAL (may differ from base_index
+    /// after eviction drains leading empty slots).
+    pub first_logical_index: Option<u64>,
     /// Index of the first entry that's actually cached in memory.
     /// Entries between base_index and cache_start_index are evicted
     /// (empty Vec in the deque) but still on disk.
     pub cache_start_index: u64,
     pub meta: BTreeMap<String, Vec<u8>>,
     pub max_cache_entries: usize,
+    /// Number of leading entries drained during eviction. Used to
+    /// maintain correct `len()` accounting.
+    pub drained_count: u64,
 }
 
 #[cfg_attr(not(feature = "std"), allow(dead_code))]
@@ -33,17 +39,36 @@ impl LogState {
         Self {
             entries: VecDeque::new(),
             base_index: 0,
+            first_logical_index: None,
             cache_start_index: 0,
             meta: BTreeMap::new(),
             max_cache_entries: usize::MAX,
+            drained_count: 0,
         }
     }
 
     /// Inserts an entry into the in-memory log.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Panics if `index` is below `base_index` (after compact). In release
+    /// builds the insert is silently ignored to prevent OOM from u64 underflow.
     pub fn insert(&mut self, index: u64, entry: &[u8]) {
         if self.entries.is_empty() {
             self.base_index = index;
             self.cache_start_index = index;
+            if self.first_logical_index.is_none() {
+                self.first_logical_index = Some(index);
+            }
+        }
+        debug_assert!(
+            index >= self.base_index,
+            "insert index {index} is below base_index {base}; \
+             this is a caller bug (e.g. append after compact with stale index)",
+            base = self.base_index
+        );
+        if index < self.base_index {
+            return;
         }
         let slot = (index - self.base_index) as usize;
         if slot >= self.entries.len() {
@@ -81,6 +106,33 @@ impl LogState {
         if evicted_up_to > self.cache_start_index {
             self.cache_start_index = evicted_up_to;
         }
+        // Drain leading empty slots to reclaim memory. Without this,
+        // long-running WALs accumulate empty Vec<u8> slots (24 bytes each)
+        // in the VecDeque for every evicted entry.
+        self.drain_evicted_prefix();
+    }
+
+    /// Drains contiguous empty entries from the front of the VecDeque,
+    /// advancing `base_index` accordingly. This reclaims the per-slot
+    /// `Vec<u8>` overhead (24 bytes each on 64-bit) for evicted entries.
+    ///
+    /// After draining, `first_index()` may advance past entries that still
+    /// exist on disk. Callers should fall back to disk reads for indices
+    /// between the old and new `first_index()`.
+    fn drain_evicted_prefix(&mut self) {
+        let mut drain_count = 0;
+        for entry in self.entries.iter() {
+            if entry.is_empty() {
+                drain_count += 1;
+            } else {
+                break;
+            }
+        }
+        if drain_count > 0 {
+            self.entries.drain(..drain_count);
+            self.base_index += drain_count as u64;
+            self.drained_count += drain_count as u64;
+        }
     }
 
     /// Simple eviction without protection (used when all data is flushed).
@@ -104,10 +156,14 @@ impl LogState {
     }
 
     pub fn first_index(&self) -> Option<u64> {
-        if self.entries.is_empty() {
+        if self.entries.is_empty() && self.drained_count == 0 {
+            self.first_logical_index
+        } else if self.entries.is_empty() {
             None
         } else {
-            Some(self.base_index)
+            // Return the original logical first index, accounting for
+            // entries drained during eviction.
+            Some(self.base_index - self.drained_count)
         }
     }
 
@@ -120,7 +176,9 @@ impl LogState {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        // Include drained entries in the count so len() reflects the
+        // total logical entry count (not just VecDeque size).
+        self.entries.len() + self.drained_count as usize
     }
 
     pub fn is_empty(&self) -> bool {
@@ -129,12 +187,28 @@ impl LogState {
 
     /// Returns true if entries were actually removed.
     pub fn compact(&mut self, up_to_inclusive: u64) -> bool {
-        if self.entries.is_empty() || up_to_inclusive < self.base_index {
+        let logical_base = self.base_index - self.drained_count;
+        if self.entries.is_empty() || up_to_inclusive < logical_base {
             return false;
         }
-        let n = ((up_to_inclusive - self.base_index) as usize + 1).min(self.entries.len());
-        self.entries.drain(..n);
-        self.base_index += n as u64;
+        // Account for already-drained entries
+        let effective_up_to = if up_to_inclusive < self.base_index {
+            // Compacting entries that were already drained from VecDeque
+            0
+        } else {
+            ((up_to_inclusive - self.base_index) as usize + 1).min(self.entries.len())
+        };
+        if effective_up_to > 0 {
+            self.entries.drain(..effective_up_to);
+            self.base_index += effective_up_to as u64;
+        }
+        // Reset drained count — compact is the "real" deletion
+        self.drained_count = 0;
+        self.first_logical_index = if self.entries.is_empty() {
+            None
+        } else {
+            Some(self.base_index)
+        };
         true
     }
 

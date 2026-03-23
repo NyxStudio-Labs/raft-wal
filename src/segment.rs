@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-pub(crate) use crate::wire::{parse_entries, serialize_entry};
-
 /// Default maximum segment size before rotation (64 MB).
 pub(crate) const DEFAULT_MAX_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 

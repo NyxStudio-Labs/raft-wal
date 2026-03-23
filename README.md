@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/raft-wal/badge.svg)](https://docs.rs/raft-wal)
 [![CI](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml/badge.svg)](https://github.com/NyxStudio-Labs/raft-wal/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
-[![tests](https://img.shields.io/badge/tests-135%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
+[![tests](https://img.shields.io/badge/tests-144%20passed-brightgreen)](https://github.com/NyxStudio-Labs/raft-wal)
 [![license](https://img.shields.io/crates/l/raft-wal.svg)](https://github.com/NyxStudio-Labs/raft-wal#license)
 
 A minimal append-only WAL (Write-Ahead Log) optimized for Raft consensus.
@@ -13,7 +13,7 @@ General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Ra
 
 ## Features
 
-- **Fast** — ~210ns append (with HW-accelerated CRC32C), ~1ns get (O(1) via `VecDeque`)
+- **Fast** — ~314ns append (with HW-accelerated CRC32C), ~2ns get (O(1) via `VecDeque`)
 - **no_std support** — `WalStorage` trait for pluggable backends (SPI flash, EEPROM, in-memory). CRC32C has a software fallback for `no_std`.
 - **WASM / WASI P2** — builds for `wasm32-wasip2` with full filesystem access
 - **io_uring** — optional `UringRaftWal` for Linux kernel-bypass async I/O
@@ -30,19 +30,19 @@ General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Ra
 
 ```toml
 [dependencies]
-raft-wal = "0.5"
+raft-wal = "0.6"
 
 # Async (tokio):
-# raft-wal = { version = "0.5", features = ["tokio"] }
+# raft-wal = { version = "0.6", features = ["tokio"] }
 
 # io_uring (Linux):
-# raft-wal = { version = "0.5", features = ["io-uring"] }
+# raft-wal = { version = "0.6", features = ["io-uring"] }
 
 # openraft integration:
-# raft-wal = { version = "0.5", features = ["openraft-storage"] }
+# raft-wal = { version = "0.6", features = ["openraft-storage"] }
 
 # no_std (custom backend):
-# raft-wal = { version = "0.5", default-features = false }
+# raft-wal = { version = "0.6", default-features = false }
 ```
 
 ### Feature matrix
@@ -104,7 +104,7 @@ wal.close().await.unwrap();
 Enable `openraft-storage` to get `RaftLogStorage` + `RaftLogReader` implementations:
 
 ```toml
-raft-wal = { version = "0.4", features = ["openraft-storage"] }
+raft-wal = { version = "0.6", features = ["openraft-storage"] }
 ```
 
 ```rust,ignore
@@ -130,46 +130,46 @@ let storage = OpenRaftLogStorage::<MyTypeConfig>::open("./raft-data").await?;
 
 ## Integrity
 
-Each entry on disk is prefixed with a CRC32C checksum covering the index, payload length, and payload bytes. On recovery, entries with invalid checksums or incomplete writes are silently discarded from the tail — the WAL recovers up to the last good entry.
+Each segment file begins with a 5-byte version header (`"RWAL"` magic + version byte), followed by entries. Each entry is prefixed with a CRC32C checksum covering the index, payload length, and payload bytes. On recovery, entries with invalid checksums or incomplete writes are silently discarded from the tail — the WAL recovers up to the last good entry. Legacy segments (v0, without header) are auto-detected and parsed correctly.
 
 ## Benchmarks
 
 Measured on Linux with 128-byte entries. Lower is better.
 
-### vs alternatives (buffered, no fsync)
+### vs alternatives
 
 | Operation | raft-wal | sled | redb | rocksdb |
 |---|---|---|---|---|
-| **append** | **209 ns** | 3.54 µs | 604 µs | 1.16 µs |
-| **get** | **1.5 ns** | 194 ns | 439 ns | 321 ns |
-| **recovery** (10k) | **1.37 ms** | 4.97 ms | 7.00 ms | 26.3 ms |
+| **append** (buffered) | **314 ns** | 3.46 µs | 2.32 ms† | 1.17 µs |
+| **append + sync** (durable) | **980 µs** | — | — | — |
+| **get** | **2.0 ns** | 192 ns | 444 ns | 300 ns |
+| **recovery** (10k) | **1.16 ms** | 11.6 ms | 8.34 ms | 8.82 ms |
 
-> **Note on durability:** `append` numbers above are **buffered without fsync**.
-> sled and rocksdb also buffer by default. redb fsyncs every transaction.
-> Latencies vary with disk cache state — run `cargo bench --bench comparison` on your hardware.
+> † redb fsyncs every transaction. sled and rocksdb buffer by default like raft-wal's `append`.
+> Run `cargo bench --bench comparison` on your hardware.
 
 ### durable writes (with fdatasync)
 
 | Pattern | Latency | Per-entry cost |
 |---|---|---|
-| `append` + `sync()` (1 entry) | ~2.4 ms | 2.4 ms |
-| `append_batch(10)` + `sync()` | ~5.0 ms | **500 µs** |
+| `append` + `sync()` (1 entry) | ~980 µs | 980 µs |
+| `append_batch(10)` + `sync()` | ~4.2 ms | **420 µs** |
 
 > In real Raft, `AppendEntries` RPCs carry multiple entries. Batch + single fdatasync
-> is the typical pattern, making the per-entry durable cost ~500µs rather than ~2.4ms.
+> is the typical pattern, making the per-entry durable cost ~420µs.
 
 ### raft-wal detailed
 
 | Operation | Latency |
 |---|---|
-| `append` (buffered) | ~260 ns |
-| `append` + `sync()` (durable) | ~2.4 ms |
-| `append_batch(10)` + `sync()` | ~5.0 ms |
-| `append_batch(10)` (buffered) | ~1.8 µs |
-| `get` (cache hit) | ~1.4 ns |
-| `read_range` (100 entries) | ~3.3 µs |
-| `recovery` (10k entries, 1 segment) | ~1.3 ms |
-| `recovery` (10k entries, multi-segment) | ~2.3 ms |
+| `append` (buffered) | ~314 ns |
+| `append` + `sync()` (durable) | ~980 µs |
+| `append_batch(10)` + `sync()` | ~4.2 ms |
+| `append_batch(10)` (buffered) | ~3.1 µs |
+| `get` (cache hit) | ~2.0 ns |
+| `read_range` (100 entries) | ~3.1 µs |
+| `recovery` (10k entries, 1 segment) | ~1.0 ms |
+| `recovery` (10k entries, multi-segment) | ~1.9 ms |
 
 ```sh
 cargo bench --bench comparison  # vs sled, redb, rocksdb
@@ -181,7 +181,7 @@ cargo bench --bench wal_async --features tokio
 
 - **Memory-bounded cache**: Recent entries are kept in a `VecDeque` (O(1) append/lookup). Older entries are evicted from memory but remain on disk. `get()` transparently falls back to disk reads for evicted entries (`Cow::Borrowed` for cache hits, `Cow::Owned` for disk). Use `set_max_cache_entries()` to limit memory. `get_cached()` provides a zero-copy fast path for in-memory entries only.
 - **Segment files**: the log is split into segment files (`{index}.seg`). When the active segment exceeds `max_segment_size` (default 64 MB), it is sealed and a new segment begins. `compact()` deletes old segments with a file remove — no rewrite needed.
-- **Entry format**: `[u32 crc32c LE][u64 index LE][u32 payload_len LE][payload]` — 16-byte header per entry
+- **Segment format** (v1): `[RWAL magic 4B][version u8]` header, then entries: `[u32 crc32c LE][u64 index LE][u32 payload_len LE][payload]` — 16-byte header per entry
 - **Buffered writes**: 64 KB `BufWriter` (sync) or userspace buffer (async) — syscalls only when the buffer fills
 - **Parallel recovery**: segment files are read and CRC-verified concurrently using one thread per CPU core (`std::thread::scope`) or `tokio::spawn` (async)
 - **Atomic metadata**: `set_meta` writes to a temp file, fsyncs, then renames — crash-safe

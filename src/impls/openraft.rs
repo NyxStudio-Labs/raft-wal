@@ -37,21 +37,24 @@ fn to_storage_err<NID: openraft::NodeId>(e: crate::WalError) -> StorageError<NID
 /// A wrapper around [`AsyncRaftWal`] that implements openraft 0.9's
 /// [`RaftLogStorage`] and [`RaftLogReader`] traits.
 ///
-/// Entries are stored as bincode-serialized bytes. Vote, committed log ID,
+/// Entries are stored as bitcode-serialized bytes. Vote, committed log ID,
 /// and purged log ID are persisted via WAL metadata (always fsynced).
 ///
 /// `C::Entry`, `Vote<C::NodeId>`, and `LogId<C::NodeId>` must implement
 /// `serde::Serialize + serde::DeserializeOwned`.
 pub struct OpenRaftLogStorage<C: RaftTypeConfig> {
     wal: AsyncRaftWal,
+    dir_path: std::path::PathBuf,
     _phantom: std::marker::PhantomData<C>,
 }
 
 impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
     /// Creates a new storage backed by the given [`AsyncRaftWal`].
     pub fn new(wal: AsyncRaftWal) -> Self {
+        let dir_path = wal.dir_path().to_path_buf();
         Self {
             wal,
+            dir_path,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -111,10 +114,12 @@ where
     }
 
     async fn get_log_reader(&mut self) -> Self::LogReader {
-        panic!(
-            "OpenRaftLogStorage does not support separate log readers. \
-             Wrap in Arc<Mutex<>> if concurrent readers are needed."
-        )
+        // Open a separate read-only WAL instance. This is used by openraft
+        // for snapshot building and does not share mutable state with the writer.
+        let wal = AsyncRaftWal::open(&self.dir_path)
+            .await
+            .expect("failed to open log reader WAL");
+        OpenRaftLogStorage::new(wal)
     }
 
     async fn save_vote(&mut self, vote: &Vote<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
@@ -166,6 +171,10 @@ where
                 .await
                 .map_err(to_storage_err)?;
         }
+        // Flush + fsync before signaling durability to openraft.
+        // Without this, entries may be in the in-memory buffer and lost on crash,
+        // even though openraft considers them committed.
+        self.wal.sync().await.map_err(to_storage_err)?;
         callback.log_io_completed(Ok(()));
         Ok(())
     }

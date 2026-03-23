@@ -46,4 +46,15 @@ pub trait WalStorage {
 
     /// Returns true if the named file exists.
     fn file_exists(&self, name: &str) -> bool;
+
+    /// Reads a byte range from the named file.
+    ///
+    /// Default implementation reads the entire file and slices. Override
+    /// for backends that support efficient random access (e.g. seek+read).
+    fn read_file_range(&self, name: &str, offset: usize, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let data = self.read_file(name)?;
+        let end = (offset + len).min(data.len());
+        let start = offset.min(end);
+        Ok(data[start..end].to_vec())
+    }
 }

@@ -7,8 +7,7 @@ use alloc::vec::Vec;
 
 use crate::state::LogState;
 use crate::storage::WalStorage;
-use crate::wire::{parse_entries, serialize_entry};
-use crate::Entry;
+use crate::wire::{parse_entries_with_offsets, segment_header, strip_segment_header};
 
 /// Default maximum segment size before rotation (64 MB).
 const DEFAULT_MAX_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
@@ -22,6 +21,10 @@ struct SegmentInfo {
     name: String,
     first_index: u64,
     last_index: u64,
+    /// Per-entry byte offsets within the segment (after header).
+    /// `entry_offsets[i]` = `(byte_offset, total_entry_size)` relative to
+    /// the start of the *file* (including any segment header).
+    entry_offsets: Vec<(u64, usize, usize)>,
 }
 
 /// Generates a segment filename from the first index.
@@ -74,20 +77,27 @@ impl<S: WalStorage> GenericRaftWal<S> {
         let mut sealed = Vec::new();
 
         for name in &seg_names {
-            let data = storage.read_file(name)?;
-            let entries = parse_entries(&data);
+            let raw = storage.read_file(name)?;
+            let (_ver, entry_data) = strip_segment_header(&raw);
+            let header_len = raw.len() - entry_data.len();
+            let entries = parse_entries_with_offsets(entry_data);
             if entries.is_empty() {
                 continue;
             }
             let first_index = entries[0].0;
             let last_index = entries[entries.len() - 1].0;
-            for (index, payload) in &entries {
+            let entry_offsets: Vec<(u64, usize, usize)> = entries
+                .iter()
+                .map(|(idx, _, off, sz)| (*idx, off + header_len, *sz))
+                .collect();
+            for (index, payload, _, _) in &entries {
                 state.insert(*index, payload);
             }
             sealed.push(SegmentInfo {
                 name: name.clone(),
                 first_index,
                 last_index,
+                entry_offsets,
             });
         }
 
@@ -103,9 +113,10 @@ impl<S: WalStorage> GenericRaftWal<S> {
         let active_bytes = if storage.file_exists(&active_name) {
             storage.file_size(&active_name)? as usize
         } else {
-            // Touch the file so it exists
-            storage.write_file(&active_name, &[])?;
-            0
+            // Create with version header
+            let hdr = segment_header();
+            storage.write_file(&active_name, &hdr)?;
+            hdr.len()
         };
 
         Ok(Self {
@@ -124,58 +135,23 @@ impl<S: WalStorage> GenericRaftWal<S> {
 
     /// Appends a single log entry.
     pub fn append(&mut self, index: u64, entry: &[u8]) -> Result<(), S::Error> {
-        self.write_buf.clear();
-        serialize_entry(&mut self.write_buf, index, entry);
-        self.disk_buf.extend_from_slice(&self.write_buf);
-        self.active_bytes += self.write_buf.len();
+        append_to_buf!(self, index, entry);
         self.active_last_index = index;
-        self.state.insert(index, entry);
-
         self.maybe_flush_and_rotate()?;
         Ok(())
     }
 
     /// Appends multiple log entries.
     pub fn append_batch<V: AsRef<[u8]>>(&mut self, entries: &[(u64, V)]) -> Result<(), S::Error> {
-        self.write_buf.clear();
-        for (index, entry) in entries {
-            serialize_entry(&mut self.write_buf, *index, entry.as_ref());
+        append_batch_to_buf!(self, entries);
+        if let Some((idx, _)) = entries.last() {
+            self.active_last_index = *idx;
         }
-        self.disk_buf.extend_from_slice(&self.write_buf);
-        self.active_bytes += self.write_buf.len();
-
-        for (index, entry) in entries {
-            self.active_last_index = *index;
-            self.state.insert(*index, entry.as_ref());
-        }
-
         self.maybe_flush_and_rotate()?;
         Ok(())
     }
 
-    /// Iterates over all entries as borrowed [`Entry`] values.
-    pub fn iter(&self) -> impl Iterator<Item = Entry<'_>> {
-        self.state.iter()
-    }
-
-    /// Iterates over entries in the given index range without cloning.
-    pub fn iter_range<R: core::ops::RangeBounds<u64>>(
-        &self,
-        range: R,
-    ) -> impl Iterator<Item = Entry<'_>> {
-        self.state.iter_range(range)
-    }
-
-    /// Returns entries within the given index range as owned pairs.
-    pub fn read_range<R: core::ops::RangeBounds<u64>>(
-        &self,
-        range: R,
-    ) -> Vec<(u64, Vec<u8>)> {
-        self.state
-            .iter_range(range)
-            .map(|e| (e.index, e.data.to_vec()))
-            .collect()
-    }
+    impl_wal_accessors!();
 
     /// Returns the cached entry at the given index, or `None` if evicted
     /// or out of range.
@@ -190,31 +166,6 @@ impl<S: WalStorage> GenericRaftWal<S> {
             return Ok(Some(data.to_vec()));
         }
         self.read_from_disk(index)
-    }
-
-    /// Returns the first (lowest) index in the log.
-    pub fn first_index(&self) -> Option<u64> {
-        self.state.first_index()
-    }
-
-    /// Returns the last (highest) index in the log.
-    pub fn last_index(&self) -> Option<u64> {
-        self.state.last_index()
-    }
-
-    /// Returns the number of entries in the log.
-    pub fn len(&self) -> usize {
-        self.state.len()
-    }
-
-    /// Returns `true` if the log contains no entries.
-    pub fn is_empty(&self) -> bool {
-        self.state.is_empty()
-    }
-
-    /// Estimated memory usage of in-memory entries and metadata in bytes.
-    pub fn estimated_memory(&self) -> usize {
-        self.state.estimated_memory()
     }
 
     /// Sets the maximum number of entries to keep in the in-memory cache.
@@ -238,19 +189,32 @@ impl<S: WalStorage> GenericRaftWal<S> {
         if !self.state.compact(up_to_inclusive) {
             return Ok(());
         }
-        // Remove sealed segments that are fully compacted
-        let storage = &mut self.storage;
-        self.sealed.retain(|seg| {
-            if seg.last_index <= up_to_inclusive {
-                let _ = storage.remove_file(&seg.name);
-                false
-            } else {
-                true
+        // Collect segment files to delete, then remove them with error propagation.
+        let to_remove: Vec<String> = self
+            .sealed
+            .iter()
+            .filter(|seg| seg.last_index <= up_to_inclusive)
+            .map(|seg| seg.name.clone())
+            .collect();
+
+        let mut first_err: Option<S::Error> = None;
+        for name in &to_remove {
+            if let Err(e) = self.storage.remove_file(name) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
-        });
-        // If the active segment's first index was compacted, rewrite it
+        }
+        // Always update the in-memory list even if some deletes failed,
+        // so the WAL state stays consistent. Orphan files on disk are
+        // harmless and will be cleaned up on next compact.
+        self.sealed.retain(|seg| seg.last_index > up_to_inclusive);
+
         if self.active_first_index <= up_to_inclusive {
             self.rewrite_active_segment()?;
+        }
+        if let Some(e) = first_err {
+            return Err(e);
         }
         Ok(())
     }
@@ -260,16 +224,27 @@ impl<S: WalStorage> GenericRaftWal<S> {
         if !self.state.truncate(from_inclusive) {
             return Ok(());
         }
-        let storage = &mut self.storage;
-        self.sealed.retain(|seg| {
-            if seg.first_index >= from_inclusive {
-                let _ = storage.remove_file(&seg.name);
-                false
-            } else {
-                true
+        let to_remove: Vec<String> = self
+            .sealed
+            .iter()
+            .filter(|seg| seg.first_index >= from_inclusive)
+            .map(|seg| seg.name.clone())
+            .collect();
+
+        let mut first_err: Option<S::Error> = None;
+        for name in &to_remove {
+            if let Err(e) = self.storage.remove_file(name) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
-        });
+        }
+        self.sealed.retain(|seg| seg.first_index < from_inclusive);
+
         self.rewrite_active_segment()?;
+        if let Some(e) = first_err {
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -277,11 +252,6 @@ impl<S: WalStorage> GenericRaftWal<S> {
     pub fn set_meta(&mut self, key: &str, value: &[u8]) -> Result<(), S::Error> {
         self.state.meta.insert(key.to_string(), value.to_vec());
         self.save_meta()
-    }
-
-    /// Returns the metadata value for the given key.
-    pub fn get_meta(&self, key: &str) -> Option<&[u8]> {
-        self.state.meta.get(key).map(|v| v.as_slice())
     }
 
     /// Removes a metadata key.
@@ -334,22 +304,34 @@ impl<S: WalStorage> GenericRaftWal<S> {
     fn rotate_segment(&mut self) -> Result<(), S::Error> {
         self.flush_buf()?;
 
+        // Build offset map for the segment we're about to seal
+        let raw = self.storage.read_file(&self.active_name)?;
+        let (_ver, entry_data) = strip_segment_header(&raw);
+        let header_len = raw.len() - entry_data.len();
+        let parsed = parse_entries_with_offsets(entry_data);
+        let entry_offsets: Vec<(u64, usize, usize)> = parsed
+            .iter()
+            .map(|(idx, _, off, sz)| (*idx, off + header_len, *sz))
+            .collect();
+
         let sealed = SegmentInfo {
             name: self.active_name.clone(),
             first_index: self.active_first_index,
             last_index: self.active_last_index,
+            entry_offsets,
         };
 
         let next_index = self.active_last_index + 1;
         let new_name = segment_name(next_index);
-        // Create the new segment file
-        self.storage.write_file(&new_name, &[])?;
+        // Create the new segment file with version header
+        let hdr = segment_header();
+        self.storage.write_file(&new_name, &hdr)?;
 
         self.sealed.push(sealed);
         self.active_name = new_name;
         self.active_first_index = next_index;
         self.active_last_index = next_index.saturating_sub(1);
-        self.active_bytes = 0;
+        self.active_bytes = hdr.len();
 
         // Now that entries are sealed, evict if needed
         self.state.evict_if_needed_until(self.active_first_index);
@@ -360,27 +342,12 @@ impl<S: WalStorage> GenericRaftWal<S> {
     fn rewrite_active_segment(&mut self) -> Result<(), S::Error> {
         self.disk_buf.clear();
 
-        let first_active = if self.state.is_empty() {
-            1
-        } else {
-            self.sealed
-                .last()
-                .map(|s| s.last_index + 1)
-                .unwrap_or(self.state.base_index)
-        };
+        let sealed_last = self.sealed.last().map(|s| s.last_index);
+        let (first_active, buf) = crate::macros::build_rewrite_buf(&self.state, sealed_last);
 
         let new_name = segment_name(first_active);
         let tmp_name = "active.tmp";
 
-        let mut buf = Vec::new();
-        if !self.state.is_empty() {
-            let last = self.state.base_index + self.state.entries.len() as u64 - 1;
-            for idx in first_active..=last {
-                if let Some(data) = self.state.get(idx) {
-                    serialize_entry(&mut buf, idx, data);
-                }
-            }
-        }
         self.storage.write_file(tmp_name, &buf)?;
 
         // Remove old active segment if name changed
@@ -410,20 +377,35 @@ impl<S: WalStorage> GenericRaftWal<S> {
     }
 
     fn read_from_disk(&self, index: u64) -> Result<Option<Vec<u8>>, S::Error> {
-        // Check sealed segments in reverse (most recent first)
+        // Check sealed segments in reverse (most recent first).
+        // Use offset map for O(1) lookup when available, falling back to
+        // full-segment read + linear scan for legacy segments.
         for seg in self.sealed.iter().rev() {
             if index >= seg.first_index && index <= seg.last_index {
-                let data = self.storage.read_file(&seg.name)?;
-                return Ok(crate::wire::find_entry_in_data(&data, index));
+                // Try offset map first (O(1) lookup via read_file_range)
+                if let Some((_, offset, size)) = seg
+                    .entry_offsets
+                    .iter()
+                    .find(|(idx, _, _)| *idx == index)
+                {
+                    let data = self.storage.read_file_range(&seg.name, *offset, *size)?;
+                    let entries = crate::wire::parse_entries(&data);
+                    if let Some((_idx, payload)) = entries.into_iter().next() {
+                        return Ok(Some(payload));
+                    }
+                }
+                // Fallback: read entire segment (legacy or offset map miss)
+                let raw = self.storage.read_file(&seg.name)?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                return Ok(crate::wire::find_entry_in_data(entry_data, index));
             }
         }
         // Check active segment
         if index >= self.active_first_index && index <= self.active_last_index {
-            // Flush pending data first? We can't because &self.
-            // Read what's on disk + check disk_buf
             if self.storage.file_exists(&self.active_name) {
-                let data = self.storage.read_file(&self.active_name)?;
-                if let Some(entry) = crate::wire::find_entry_in_data(&data, index) {
+                let raw = self.storage.read_file(&self.active_name)?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                if let Some(entry) = crate::wire::find_entry_in_data(entry_data, index) {
                     return Ok(Some(entry));
                 }
             }

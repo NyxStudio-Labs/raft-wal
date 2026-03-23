@@ -7,10 +7,8 @@ mod inner {
     use std::ops::RangeBounds;
     use std::path::{Path, PathBuf};
 
-    use crate::segment::{
-        list_segments, parse_entries, segment_path, serialize_entry, SegmentMeta,
-        DEFAULT_MAX_SEGMENT_SIZE,
-    };
+    use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
+    use crate::wire::{parse_entries_with_offsets, segment_header, strip_segment_header};
     use crate::state::LogState;
     use crate::{Entry, Result};
 
@@ -54,8 +52,12 @@ mod inner {
             let seg_paths = list_segments(dir);
             let mut sealed = Vec::new();
             for path in seg_paths {
-                let data = std::fs::read(&path)?;
-                let entries = parse_entries(&data);
+                let raw = std::fs::read(&path)?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                let entries: Vec<(u64, Vec<u8>)> = parse_entries_with_offsets(entry_data)
+                    .into_iter()
+                    .map(|(idx, payload, _, _)| (idx, payload))
+                    .collect();
                 if entries.is_empty() {
                     continue;
                 }
@@ -78,14 +80,23 @@ mod inner {
 
             let next_index = state.last_index().map(|i| i + 1).unwrap_or(1);
             let active_path = segment_path(dir, next_index);
+            let is_new = !active_path.exists();
             let wal_file = tokio_uring::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
                 .open(&active_path)
                 .await?;
-            let active_bytes = std::fs::metadata(&active_path)
-                .map(|m| m.len() as usize)
-                .unwrap_or(0);
+            let active_bytes = if is_new {
+                let hdr = segment_header();
+                let hdr_len = hdr.len();
+                let (res, _) = wal_file.write_all_at(hdr.to_vec(), 0).await;
+                res?;
+                hdr_len
+            } else {
+                std::fs::metadata(&active_path)
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0)
+            };
 
             Ok(Self {
                 state,
@@ -108,12 +119,8 @@ mod inner {
 
         /// Appends a single log entry.
         pub async fn append(&mut self, index: u64, entry: &[u8]) -> Result<()> {
-            self.write_buf.clear();
-            serialize_entry(&mut self.write_buf, index, entry);
-            self.disk_buf.extend_from_slice(&self.write_buf);
-            self.active_bytes += self.write_buf.len();
+            append_to_buf!(self, index, entry);
             self.active_meta.last_index = index;
-            self.state.insert(index, entry);
 
             if self.disk_buf.len() >= FLUSH_THRESHOLD {
                 self.flush_buf().await?;
@@ -129,16 +136,9 @@ mod inner {
             &mut self,
             entries: &[(u64, V)],
         ) -> Result<()> {
-            self.write_buf.clear();
-            for (index, entry) in entries {
-                serialize_entry(&mut self.write_buf, *index, entry.as_ref());
-            }
-            self.disk_buf.extend_from_slice(&self.write_buf);
-            self.active_bytes += self.write_buf.len();
-
-            for (index, entry) in entries {
-                self.active_meta.last_index = *index;
-                self.state.insert(*index, entry.as_ref());
+            append_batch_to_buf!(self, entries);
+            if let Some((idx, _)) = entries.last() {
+                self.active_meta.last_index = *idx;
             }
 
             if self.disk_buf.len() >= FLUSH_THRESHOLD {
@@ -150,55 +150,11 @@ mod inner {
             Ok(())
         }
 
-        /// Iterates over all entries as borrowed [`Entry`] values.
-        pub fn iter(&self) -> impl Iterator<Item = Entry<'_>> {
-            self.state.iter()
-        }
-
-        /// Iterates over entries in the given index range without cloning.
-        pub fn iter_range<R: RangeBounds<u64>>(
-            &self,
-            range: R,
-        ) -> impl Iterator<Item = Entry<'_>> {
-            self.state.iter_range(range)
-        }
-
-        /// Returns entries within the given index range as owned pairs.
-        pub fn read_range<R: RangeBounds<u64>>(&self, range: R) -> Vec<(u64, Vec<u8>)> {
-            self.state
-                .iter_range(range)
-                .map(|e| (e.index, e.data.to_vec()))
-                .collect()
-        }
+        impl_wal_accessors!();
 
         /// Returns the entry at the given index.
         pub fn get(&self, index: u64) -> Option<&[u8]> {
             self.state.get(index)
-        }
-
-        /// Returns the first (lowest) index in the log.
-        pub fn first_index(&self) -> Option<u64> {
-            self.state.first_index()
-        }
-
-        /// Returns the last (highest) index in the log.
-        pub fn last_index(&self) -> Option<u64> {
-            self.state.last_index()
-        }
-
-        /// Returns the number of entries in the log.
-        pub fn len(&self) -> usize {
-            self.state.len()
-        }
-
-        /// Returns `true` if the log contains no entries.
-        pub fn is_empty(&self) -> bool {
-            self.state.is_empty()
-        }
-
-        /// Estimated memory usage of in-memory entries and metadata in bytes.
-        pub fn estimated_memory(&self) -> usize {
-            self.state.estimated_memory()
         }
 
         /// Discards all entries with index <= `up_to_inclusive`.
@@ -206,16 +162,30 @@ mod inner {
             if !self.state.compact(up_to_inclusive) {
                 return Ok(());
             }
-            self.sealed.retain(|seg| {
-                if seg.last_index <= up_to_inclusive {
-                    let _ = std::fs::remove_file(&seg.path);
-                    false
-                } else {
-                    true
+            let to_remove: Vec<std::path::PathBuf> = self
+                .sealed
+                .iter()
+                .filter(|seg| seg.last_index <= up_to_inclusive)
+                .map(|seg| seg.path.clone())
+                .collect();
+
+            let mut first_err: Option<std::io::Error> = None;
+            for path in &to_remove {
+                // tokio_uring has no fs::remove_file; std::fs::remove_file
+                // is acceptable here as unlink is a fast metadata-only op.
+                if let Err(e) = std::fs::remove_file(path) {
+                    if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
-            });
+            }
+            self.sealed.retain(|seg| seg.last_index > up_to_inclusive);
+
             if self.active_meta.first_index <= up_to_inclusive {
                 self.rewrite_active_segment().await?;
+            }
+            if let Some(e) = first_err {
+                return Err(e.into());
             }
             Ok(())
         }
@@ -225,15 +195,27 @@ mod inner {
             if !self.state.truncate(from_inclusive) {
                 return Ok(());
             }
-            self.sealed.retain(|seg| {
-                if seg.first_index >= from_inclusive {
-                    let _ = std::fs::remove_file(&seg.path);
-                    false
-                } else {
-                    true
+            let to_remove: Vec<std::path::PathBuf> = self
+                .sealed
+                .iter()
+                .filter(|seg| seg.first_index >= from_inclusive)
+                .map(|seg| seg.path.clone())
+                .collect();
+
+            let mut first_err: Option<std::io::Error> = None;
+            for path in &to_remove {
+                if let Err(e) = std::fs::remove_file(path) {
+                    if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
-            });
+            }
+            self.sealed.retain(|seg| seg.first_index < from_inclusive);
+
             self.rewrite_active_segment().await?;
+            if let Some(e) = first_err {
+                return Err(e.into());
+            }
             Ok(())
         }
 
@@ -241,11 +223,6 @@ mod inner {
         pub async fn set_meta(&mut self, key: &str, value: &[u8]) -> Result<()> {
             self.state.meta.insert(key.to_string(), value.to_vec());
             self.save_meta().await
-        }
-
-        /// Returns the metadata value for the given key.
-        pub fn get_meta(&self, key: &str) -> Option<&[u8]> {
-            self.state.meta.get(key).map(|v| v.as_slice())
         }
 
         /// Removes a metadata key.
@@ -303,6 +280,13 @@ mod inner {
                 .write(true)
                 .open(&new_path)
                 .await?;
+
+            // Write version header to new segment
+            let hdr = segment_header();
+            let hdr_len = hdr.len();
+            let (res, _) = new_file.write_all_at(hdr.to_vec(), 0).await;
+            res?;
+
             self.replace_wal_file(new_file).await?;
 
             self.sealed.push(sealed_meta);
@@ -311,39 +295,33 @@ mod inner {
                 first_index: next_index,
                 last_index: next_index.saturating_sub(1),
             };
-            self.active_bytes = 0;
-            self.flushed_bytes = 0;
+            self.active_bytes = hdr_len;
+            self.flushed_bytes = hdr_len as u64;
             Ok(())
         }
 
         async fn rewrite_active_segment(&mut self) -> Result<()> {
             self.disk_buf.clear();
 
-            let first_active = if self.state.is_empty() {
-                1
-            } else {
-                self.sealed
-                    .last()
-                    .map(|s| s.last_index + 1)
-                    .unwrap_or(self.state.base_index)
-            };
+            let sealed_last = self.sealed.last().map(|s| s.last_index);
+            let (first_active, buf) = crate::macros::build_rewrite_buf(&self.state, sealed_last);
+
             let new_path = segment_path(&self.dir_path, first_active);
             let tmp_path = self.dir_path.join("active.tmp");
 
-            let mut buf = Vec::new();
-            if !self.state.is_empty() {
-                let last = self.state.base_index + self.state.entries.len() as u64 - 1;
-                for idx in first_active..=last {
-                    if let Some(data) = self.state.get(idx) {
-                        serialize_entry(&mut buf, idx, data);
-                    }
-                }
-            }
-            std::fs::write(&tmp_path, &buf)?;
+            // Write via io_uring instead of blocking std::fs::write
+            let tmp_file = tokio_uring::fs::File::create(&tmp_path).await?;
+            let buf_len = buf.len();
+            let (res, _) = tmp_file.write_all_at(buf, 0).await;
+            res?;
+            tmp_file.sync_all().await?;
+            tmp_file.close().await?;
 
             if self.active_meta.path != new_path {
+                // unlink is a fast metadata op, acceptable as blocking
                 let _ = std::fs::remove_file(&self.active_meta.path);
             }
+            // rename is a fast metadata op, acceptable as blocking
             std::fs::rename(&tmp_path, &new_path)?;
 
             let new_file = tokio_uring::fs::OpenOptions::new()
@@ -351,8 +329,8 @@ mod inner {
                 .open(&new_path)
                 .await?;
             self.replace_wal_file(new_file).await?;
-            self.active_bytes = buf.len();
-            self.flushed_bytes = buf.len() as u64;
+            self.active_bytes = buf_len;
+            self.flushed_bytes = buf_len as u64;
             self.active_meta = SegmentMeta {
                 path: new_path,
                 first_index: first_active,

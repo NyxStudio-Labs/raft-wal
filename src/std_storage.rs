@@ -76,8 +76,11 @@ impl WalStorage for StdStorage {
     }
 
     fn sync_file(&mut self, name: &str) -> Result<(), Self::Error> {
-        let file = fs::File::open(self.path(name))?;
-        file.sync_all()
+        // Open in write mode so we sync the same fd semantics as the writer.
+        // Opening read-only and calling sync_all() works on Linux (shared page
+        // cache) but is not guaranteed by POSIX.
+        let file = fs::OpenOptions::new().write(true).open(self.path(name))?;
+        file.sync_data()
     }
 
     fn rename_file(&mut self, from: &str, to: &str) -> Result<(), Self::Error> {
@@ -90,5 +93,14 @@ impl WalStorage for StdStorage {
 
     fn file_exists(&self, name: &str) -> bool {
         self.path(name).exists()
+    }
+
+    fn read_file_range(&self, name: &str, offset: usize, len: usize) -> Result<Vec<u8>, Self::Error> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = fs::File::open(self.path(name))?;
+        file.seek(SeekFrom::Start(offset as u64))?;
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf)?;
+        Ok(buf)
     }
 }

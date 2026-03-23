@@ -347,8 +347,11 @@ async fn async_rq07_corrupt_recovery() {
     let segs = find_segments(&path);
     let last_seg = &segs[segs.len() - 1];
     let mut data = fs::read(last_seg).unwrap();
-    if data.len() > 20 {
-        data[20] ^= 0xFF;
+    // Account for segment version header (5 bytes: "RWAL" + version)
+    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
+    let second_entry_offset = seg_hdr + 20; // first entry: 16 hdr + 4 payload
+    if data.len() > second_entry_offset {
+        data[second_entry_offset] ^= 0xFF;
         fs::write(last_seg, &data).unwrap();
     }
     {

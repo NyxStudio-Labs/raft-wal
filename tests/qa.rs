@@ -506,10 +506,13 @@ fn rq09_corrupt_crc_recovery() {
     assert!(!seg_files.is_empty());
     let last_seg = &seg_files[seg_files.len() - 1];
     let mut data = fs::read(last_seg).unwrap();
-    // First entry: 16 header + 4 payload = 20 bytes
-    // Second entry starts at offset 20, first 4 bytes are CRC
-    if data.len() > 20 {
-        data[20] ^= 0xFF; // corrupt CRC of second entry
+    // Segment may have a 5-byte version header ("RWAL" + version).
+    // First entry: 16 header + 4 payload = 20 bytes (after segment header).
+    // Second entry CRC starts at segment_header + 20.
+    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
+    let second_entry_offset = seg_hdr + 20;
+    if data.len() > second_entry_offset {
+        data[second_entry_offset] ^= 0xFF; // corrupt CRC of second entry
         fs::write(last_seg, &data).unwrap();
     }
     {
