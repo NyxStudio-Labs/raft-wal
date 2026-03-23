@@ -27,7 +27,7 @@ General-purpose KV stores like sled or RocksDB carry unnecessary overhead for Ra
 
 ```toml
 [dependencies]
-raft-wal = "0.2"
+raft-wal = "0.4"
 
 # For async support:
 # raft-wal = { version = "0.4", features = ["tokio"] }
