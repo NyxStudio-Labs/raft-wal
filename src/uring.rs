@@ -1,24 +1,23 @@
-//! Async WAL backed by io_uring via `tokio-uring`.
+//! Async WAL backed by `io_uring` via `tokio-uring`.
 //!
 //! Linux-only. Enable with the `io-uring` feature flag.
 
 #[cfg(target_os = "linux")]
 mod inner {
-    use std::ops::RangeBounds;
     use std::path::{Path, PathBuf};
 
     use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
     use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
-    use crate::wire::{segment_header, strip_segment_header};
     use crate::state::LogState;
-    use crate::{Entry, Result};
+    use crate::wire::segment_header;
+    use crate::Result;
 
     const FLUSH_THRESHOLD: usize = 64 * 1024;
 
     /// Async WAL backed by `io_uring` via [`tokio_uring`].
     ///
     /// Same segment-based design as [`crate::AsyncRaftWal`] but all file I/O
-    /// goes through the io_uring submission queue instead of a thread pool,
+    /// goes through the `io_uring` submission queue instead of a thread pool,
     /// reducing syscall overhead on Linux 5.1+.
     ///
     /// **Durability guarantees** are identical to [`crate::AsyncRaftWal`]:
@@ -42,6 +41,11 @@ mod inner {
 
     impl UringRaftWal {
         /// Opens or creates a WAL in the given directory.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the directory cannot be created or existing
+        /// segments cannot be recovered.
         pub async fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
             let dir = data_dir.as_ref();
             std::fs::create_dir_all(dir)?;
@@ -79,7 +83,7 @@ mod inner {
                 state.recover_meta(&data);
             }
 
-            let next_index = state.last_index().map(|i| i + 1).unwrap_or(1);
+            let next_index = state.last_index().map_or(1, |i| i + 1);
             let active_path = segment_path(dir, next_index);
             let is_new = !active_path.exists();
             let wal_file = tokio_uring::fs::OpenOptions::new()
@@ -94,9 +98,12 @@ mod inner {
                 res?;
                 hdr_len
             } else {
-                std::fs::metadata(&active_path)
-                    .map(|m| m.len() as usize)
-                    .unwrap_or(0)
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    std::fs::metadata(&active_path)
+                        .map(|m| m.len() as usize)
+                        .unwrap_or(0)
+                }
             };
 
             Ok(Self {
@@ -109,6 +116,7 @@ mod inner {
                     last_index: next_index.saturating_sub(1),
                 },
                 active_bytes,
+                #[allow(clippy::cast_possible_truncation)]
                 flushed_bytes: active_bytes as u64,
                 disk_buf: Vec::with_capacity(FLUSH_THRESHOLD * 2),
                 max_segment_size: DEFAULT_MAX_SEGMENT_SIZE,
@@ -119,6 +127,10 @@ mod inner {
         }
 
         /// Appends a single log entry.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O operations fail.
         pub async fn append(&mut self, index: u64, entry: &[u8]) -> Result<()> {
             append_to_buf!(self, index, entry);
             self.active_meta.last_index = index;
@@ -133,6 +145,10 @@ mod inner {
         }
 
         /// Appends multiple log entries.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O operations fail.
         pub async fn append_batch<V: AsRef<[u8]>>(
             &mut self,
             entries: &[(u64, V)],
@@ -154,11 +170,16 @@ mod inner {
         impl_wal_accessors!();
 
         /// Returns the entry at the given index.
+        #[must_use]
         pub fn get(&self, index: u64) -> Option<&[u8]> {
             self.state.get(index)
         }
 
         /// Discards all entries with index <= `up_to_inclusive`.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O operations fail.
         pub async fn compact(&mut self, up_to_inclusive: u64) -> Result<()> {
             if !self.state.compact(up_to_inclusive) {
                 return Ok(());
@@ -208,6 +229,10 @@ mod inner {
         }
 
         /// Discards all entries with index >= `from_inclusive`.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O operations fail.
         pub async fn truncate(&mut self, from_inclusive: u64) -> Result<()> {
             if !self.state.truncate(from_inclusive) {
                 return Ok(());
@@ -255,18 +280,30 @@ mod inner {
         }
 
         /// Stores a metadata key-value pair. Always fsynced.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if persisting the metadata fails.
         pub async fn set_meta(&mut self, key: &str, value: &[u8]) -> Result<()> {
             self.state.meta.insert(key.to_string(), value.to_vec());
             self.save_meta().await
         }
 
         /// Removes a metadata key.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if persisting the metadata fails.
         pub async fn remove_meta(&mut self, key: &str) -> Result<()> {
             self.state.meta.remove(key);
             self.save_meta().await
         }
 
         /// Flushes buffered writes and fsyncs data to stable storage.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the flush or sync operation fails.
         pub async fn sync(&mut self) -> Result<()> {
             self.flush_buf().await?;
             self.wal_file.sync_data().await?;
@@ -274,6 +311,10 @@ mod inner {
         }
 
         /// Flushes and closes the WAL.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the flush, sync, or close operation fails.
         pub async fn close(mut self) -> Result<()> {
             self.sync().await?;
             self.wal_file.close().await?;
