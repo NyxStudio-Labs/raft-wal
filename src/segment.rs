@@ -1,4 +1,9 @@
 //! Segment file management (std only).
+//!
+//! Used by `tokio` and `io-uring` backends. May appear unused when
+//! only the `std` feature is enabled.
+
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 

@@ -130,6 +130,3 @@ macro_rules! append_batch_to_buf {
     }};
 }
 
-pub(crate) use append_batch_to_buf;
-pub(crate) use append_to_buf;
-pub(crate) use impl_wal_accessors;
