@@ -3,41 +3,6 @@
 //! Eliminates code duplication across sync (`GenericRaftWal`),
 //! tokio (`AsyncRaftWal`), and io_uring (`UringRaftWal`) backends.
 
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-
-use crate::state::LogState;
-use crate::wire::{segment_header, serialize_entry};
-
-/// Builds the buffer for rewriting the active segment.
-///
-/// Returns `(first_active_index, buf)` where `buf` includes the segment
-/// version header followed by serialized entries.
-pub(crate) fn build_rewrite_buf(
-    state: &LogState,
-    sealed_last_index: Option<u64>,
-) -> (u64, Vec<u8>) {
-    let first_active = if state.is_empty() {
-        1
-    } else {
-        sealed_last_index
-            .map(|i| i + 1)
-            .unwrap_or(state.base_index)
-    };
-
-    let hdr = segment_header();
-    let mut buf = Vec::from(hdr.as_slice());
-    if !state.is_empty() {
-        let last = state.base_index + state.entries.len() as u64 - 1;
-        for idx in first_active..=last {
-            if let Some(data) = state.get(idx) {
-                serialize_entry(&mut buf, idx, data);
-            }
-        }
-    }
-    (first_active, buf)
-}
-
 /// Generates read-only accessor methods that delegate to `self.state`.
 ///
 /// All WAL backends share these methods identically. The `get` / `get_cached`
@@ -116,6 +81,7 @@ macro_rules! append_to_buf {
 }
 
 /// Serializes a batch of entries into the write buffer and appends to disk_buf.
+#[allow(unused_macros)]
 macro_rules! append_batch_to_buf {
     ($self:expr, $entries:expr) => {{
         $self.write_buf.clear();

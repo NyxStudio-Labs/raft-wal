@@ -171,15 +171,15 @@ impl AsyncRaftWal {
         if !self.state.compact(up_to_inclusive) {
             return Ok(());
         }
-        // Collect paths to delete, then remove asynchronously
+        let mut first_err: Option<std::io::Error> = None;
+
+        // Remove fully-covered segments
         let to_remove: Vec<std::path::PathBuf> = self
             .sealed
             .iter()
             .filter(|seg| seg.last_index <= up_to_inclusive)
             .map(|seg| seg.path.clone())
             .collect();
-
-        let mut first_err: Option<std::io::Error> = None;
         for path in &to_remove {
             if let Err(e) = ::tokio::fs::remove_file(path).await {
                 if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
@@ -187,6 +187,31 @@ impl AsyncRaftWal {
                 }
             }
         }
+
+        // Rewrite partially-overlapping sealed segments
+        for seg in &mut self.sealed {
+            if seg.first_index <= up_to_inclusive && seg.last_index > up_to_inclusive {
+                let raw = ::tokio::fs::read(&seg.path).await?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                let entries = parse_entries_with_offsets(entry_data);
+                let hdr = segment_header();
+                let mut buf = Vec::from(hdr.as_slice());
+                for (idx, payload, _, _) in &entries {
+                    if *idx > up_to_inclusive {
+                        crate::wire::serialize_entry(&mut buf, *idx, payload);
+                    }
+                }
+                let tmp = self.dir_path.join("compact_rewrite.tmp");
+                ::tokio::fs::write(&tmp, &buf).await?;
+                {
+                    let f = ::tokio::fs::File::open(&tmp).await?;
+                    f.sync_all().await?;
+                }
+                ::tokio::fs::rename(&tmp, &seg.path).await?;
+                seg.first_index = up_to_inclusive + 1;
+            }
+        }
+
         self.sealed.retain(|seg| seg.last_index > up_to_inclusive);
 
         if self.active_meta.first_index <= up_to_inclusive {
@@ -203,14 +228,14 @@ impl AsyncRaftWal {
         if !self.state.truncate(from_inclusive) {
             return Ok(());
         }
+        let mut first_err: Option<std::io::Error> = None;
+
         let to_remove: Vec<std::path::PathBuf> = self
             .sealed
             .iter()
             .filter(|seg| seg.first_index >= from_inclusive)
             .map(|seg| seg.path.clone())
             .collect();
-
-        let mut first_err: Option<std::io::Error> = None;
         for path in &to_remove {
             if let Err(e) = ::tokio::fs::remove_file(path).await {
                 if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
@@ -218,6 +243,31 @@ impl AsyncRaftWal {
                 }
             }
         }
+
+        // Rewrite partially-overlapping sealed segments
+        for seg in &mut self.sealed {
+            if seg.last_index >= from_inclusive && seg.first_index < from_inclusive {
+                let raw = ::tokio::fs::read(&seg.path).await?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                let entries = parse_entries_with_offsets(entry_data);
+                let hdr = segment_header();
+                let mut buf = Vec::from(hdr.as_slice());
+                for (idx, payload, _, _) in &entries {
+                    if *idx < from_inclusive {
+                        crate::wire::serialize_entry(&mut buf, *idx, payload);
+                    }
+                }
+                let tmp = self.dir_path.join("truncate_rewrite.tmp");
+                ::tokio::fs::write(&tmp, &buf).await?;
+                {
+                    let f = ::tokio::fs::File::open(&tmp).await?;
+                    f.sync_all().await?;
+                }
+                ::tokio::fs::rename(&tmp, &seg.path).await?;
+                seg.last_index = from_inclusive - 1;
+            }
+        }
+
         self.sealed.retain(|seg| seg.first_index < from_inclusive);
 
         self.rewrite_active_segment().await?;
@@ -305,7 +355,38 @@ impl AsyncRaftWal {
         self.disk_buf.clear();
 
         let sealed_last = self.sealed.last().map(|s| s.last_index);
-        let (first_active, buf) = crate::macros::build_rewrite_buf(&self.state, sealed_last);
+        let first_active = if self.state.is_empty() {
+            1
+        } else {
+            sealed_last
+                .map(|i| i + 1)
+                .unwrap_or(self.state.base_index)
+        };
+
+        // Read existing entries from disk so evicted entries aren't lost
+        let existing_on_disk = if self.active_meta.path.exists() {
+            let raw = ::tokio::fs::read(&self.active_meta.path).await?;
+            let (_ver, entry_data) = strip_segment_header(&raw);
+            parse_entries_with_offsets(entry_data)
+        } else {
+            Vec::new()
+        };
+
+        let hdr = segment_header();
+        let mut buf = Vec::from(hdr.as_slice());
+        if !self.state.is_empty() {
+            let last = self.state.base_index + self.state.entries.len() as u64 - 1;
+            for idx in first_active..=last {
+                if let Some(data) = self.state.get(idx) {
+                    crate::wire::serialize_entry(&mut buf, idx, data);
+                } else if let Some((_, payload, _, _)) = existing_on_disk
+                    .iter()
+                    .find(|(i, _, _, _)| *i == idx)
+                {
+                    crate::wire::serialize_entry(&mut buf, idx, payload);
+                }
+            }
+        }
 
         let new_path = segment_path(&self.dir_path, first_active);
         let tmp_path = self.dir_path.join("active.tmp");

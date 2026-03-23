@@ -162,23 +162,46 @@ mod inner {
             if !self.state.compact(up_to_inclusive) {
                 return Ok(());
             }
+            let mut first_err: Option<std::io::Error> = None;
+
             let to_remove: Vec<std::path::PathBuf> = self
                 .sealed
                 .iter()
                 .filter(|seg| seg.last_index <= up_to_inclusive)
                 .map(|seg| seg.path.clone())
                 .collect();
-
-            let mut first_err: Option<std::io::Error> = None;
             for path in &to_remove {
-                // tokio_uring has no fs::remove_file; std::fs::remove_file
-                // is acceptable here as unlink is a fast metadata-only op.
                 if let Err(e) = std::fs::remove_file(path) {
                     if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
                         first_err = Some(e);
                     }
                 }
             }
+
+            // Rewrite partially-overlapping sealed segments
+            for seg in &mut self.sealed {
+                if seg.first_index <= up_to_inclusive && seg.last_index > up_to_inclusive {
+                    let raw = std::fs::read(&seg.path)?;
+                    let (_ver, entry_data) = strip_segment_header(&raw);
+                    let entries = parse_entries_with_offsets(entry_data);
+                    let hdr = segment_header();
+                    let mut buf = Vec::from(hdr.as_slice());
+                    for (idx, payload, _, _) in &entries {
+                        if *idx > up_to_inclusive {
+                            crate::wire::serialize_entry(&mut buf, *idx, payload);
+                        }
+                    }
+                    let tmp = self.dir_path.join("compact_rewrite.tmp");
+                    std::fs::write(&tmp, &buf)?;
+                    {
+                        let f = std::fs::File::open(&tmp)?;
+                        f.sync_all()?;
+                    }
+                    std::fs::rename(&tmp, &seg.path)?;
+                    seg.first_index = up_to_inclusive + 1;
+                }
+            }
+
             self.sealed.retain(|seg| seg.last_index > up_to_inclusive);
 
             if self.active_meta.first_index <= up_to_inclusive {
@@ -195,14 +218,14 @@ mod inner {
             if !self.state.truncate(from_inclusive) {
                 return Ok(());
             }
+            let mut first_err: Option<std::io::Error> = None;
+
             let to_remove: Vec<std::path::PathBuf> = self
                 .sealed
                 .iter()
                 .filter(|seg| seg.first_index >= from_inclusive)
                 .map(|seg| seg.path.clone())
                 .collect();
-
-            let mut first_err: Option<std::io::Error> = None;
             for path in &to_remove {
                 if let Err(e) = std::fs::remove_file(path) {
                     if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
@@ -210,6 +233,31 @@ mod inner {
                     }
                 }
             }
+
+            // Rewrite partially-overlapping sealed segments
+            for seg in &mut self.sealed {
+                if seg.last_index >= from_inclusive && seg.first_index < from_inclusive {
+                    let raw = std::fs::read(&seg.path)?;
+                    let (_ver, entry_data) = strip_segment_header(&raw);
+                    let entries = parse_entries_with_offsets(entry_data);
+                    let hdr = segment_header();
+                    let mut buf = Vec::from(hdr.as_slice());
+                    for (idx, payload, _, _) in &entries {
+                        if *idx < from_inclusive {
+                            crate::wire::serialize_entry(&mut buf, *idx, payload);
+                        }
+                    }
+                    let tmp = self.dir_path.join("truncate_rewrite.tmp");
+                    std::fs::write(&tmp, &buf)?;
+                    {
+                        let f = std::fs::File::open(&tmp)?;
+                        f.sync_all()?;
+                    }
+                    std::fs::rename(&tmp, &seg.path)?;
+                    seg.last_index = from_inclusive - 1;
+                }
+            }
+
             self.sealed.retain(|seg| seg.first_index < from_inclusive);
 
             self.rewrite_active_segment().await?;
@@ -270,6 +318,8 @@ mod inner {
 
         async fn rotate_segment(&mut self) -> Result<()> {
             self.flush_buf().await?;
+            // Sync active segment to disk before sealing
+            self.wal_file.sync_data().await?;
 
             let sealed_meta = self.active_meta.clone();
             let next_index = self.active_meta.last_index + 1;
@@ -304,12 +354,42 @@ mod inner {
             self.disk_buf.clear();
 
             let sealed_last = self.sealed.last().map(|s| s.last_index);
-            let (first_active, buf) = crate::macros::build_rewrite_buf(&self.state, sealed_last);
+            let first_active = if self.state.is_empty() {
+                1
+            } else {
+                sealed_last
+                    .map(|i| i + 1)
+                    .unwrap_or(self.state.base_index)
+            };
+
+            // Read existing entries from disk so evicted entries aren't lost
+            let existing_on_disk = if self.active_meta.path.exists() {
+                let raw = std::fs::read(&self.active_meta.path)?;
+                let (_ver, entry_data) = strip_segment_header(&raw);
+                parse_entries_with_offsets(entry_data)
+            } else {
+                Vec::new()
+            };
+
+            let hdr = segment_header();
+            let mut buf = Vec::from(hdr.as_slice());
+            if !self.state.is_empty() {
+                let last = self.state.base_index + self.state.entries.len() as u64 - 1;
+                for idx in first_active..=last {
+                    if let Some(data) = self.state.get(idx) {
+                        crate::wire::serialize_entry(&mut buf, idx, data);
+                    } else if let Some((_, payload, _, _)) = existing_on_disk
+                        .iter()
+                        .find(|(i, _, _, _)| *i == idx)
+                    {
+                        crate::wire::serialize_entry(&mut buf, idx, payload);
+                    }
+                }
+            }
 
             let new_path = segment_path(&self.dir_path, first_active);
             let tmp_path = self.dir_path.join("active.tmp");
 
-            // Write via io_uring instead of blocking std::fs::write
             let tmp_file = tokio_uring::fs::File::create(&tmp_path).await?;
             let buf_len = buf.len();
             let (res, _) = tmp_file.write_all_at(buf, 0).await;
@@ -318,11 +398,14 @@ mod inner {
             tmp_file.close().await?;
 
             if self.active_meta.path != new_path {
-                // unlink is a fast metadata op, acceptable as blocking
                 let _ = std::fs::remove_file(&self.active_meta.path);
             }
-            // rename is a fast metadata op, acceptable as blocking
             std::fs::rename(&tmp_path, &new_path)?;
+            // Directory fsync for durable rename
+            {
+                let dir = std::fs::File::open(&self.dir_path)?;
+                dir.sync_all()?;
+            }
 
             let new_file = tokio_uring::fs::OpenOptions::new()
                 .write(true)
@@ -351,6 +434,11 @@ mod inner {
             file.sync_all().await?;
             file.close().await?;
             std::fs::rename(&tmp_path, &self.meta_path)?;
+            // Directory fsync for durable rename
+            {
+                let dir = std::fs::File::open(&self.dir_path)?;
+                dir.sync_all()?;
+            }
             Ok(())
         }
     }
