@@ -502,26 +502,33 @@ fn rq09_corrupt_crc_recovery() {
         wal.append(2, b"will-corrupt").unwrap();
         wal.append(3, b"after-corrupt").unwrap();
     }
-    // Corrupt CRC of second entry in the segment file
+    // Corrupt bytes in the segment file
     let seg_files = find_segments(&path);
     assert!(!seg_files.is_empty());
     let last_seg = &seg_files[seg_files.len() - 1];
     let mut data = fs::read(last_seg).unwrap();
-    // Segment may have a 5-byte version header ("RWAL" + version).
-    // First entry: 16 header + 4 payload = 20 bytes (after segment header).
-    // Second entry CRC starts at segment_header + 20.
     let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
-    let second_entry_offset = seg_hdr + 20;
-    if data.len() > second_entry_offset {
-        data[second_entry_offset] ^= 0xFF; // corrupt CRC of second entry
+    // Corrupt a byte after the header
+    let corrupt_offset = seg_hdr + 20;
+    if data.len() > corrupt_offset {
+        data[corrupt_offset] ^= 0xFF;
         fs::write(last_seg, &data).unwrap();
     }
     {
         let wal = open(&path);
-        // Only first entry should survive (CRC check stops at corruption)
-        assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
-        assert!(wal.get(2).is_none());
-        assert!(wal.get(3).is_none());
+        // With zstd: corrupted compressed block → entire block lost (all entries gone).
+        // Without zstd: CRC stops at corruption → only first entry survives.
+        #[cfg(feature = "zstd")]
+        {
+            // Compressed block is corrupted, no entries recovered
+            assert!(wal.is_empty());
+        }
+        #[cfg(not(feature = "zstd"))]
+        {
+            assert_eq!(wal.get(1).as_deref(), Some(b"good".as_slice()));
+            assert!(wal.get(2).is_none());
+            assert!(wal.get(3).is_none());
+        }
     }
 }
 
@@ -542,9 +549,17 @@ fn rq10_partial_entry_at_tail() {
     fs::write(last_seg, truncated).unwrap();
     {
         let wal = open(&path);
-        assert_eq!(wal.get(1).as_deref(), Some(b"complete".as_slice()));
-        // Second entry may or may not survive depending on how much was cut
-        assert_eq!(wal.len(), 1);
+        // With zstd: truncated compressed block → entire block lost.
+        // Without zstd: entry-level truncation → first entry survives.
+        #[cfg(feature = "zstd")]
+        {
+            assert!(wal.is_empty());
+        }
+        #[cfg(not(feature = "zstd"))]
+        {
+            assert_eq!(wal.get(1).as_deref(), Some(b"complete".as_slice()));
+            assert_eq!(wal.len(), 1);
+        }
     }
 }
 

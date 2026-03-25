@@ -10,10 +10,12 @@ repository = "https://github.com/NyxStudio-Labs/raft-wal"
 readme = "README.md"
 
 [features]
-default = ["std"]
+default = ["std", "zstd"]
+zstd = ["dep:zstd"]
 std = ["dep:crc32c"]
 tokio = ["dep:tokio", "std"]
 io-uring = ["dep:tokio-uring", "std"]
+io-uring-bridge = ["io-uring", "dep:crossbeam-channel", "tokio"]
 openraft-storage = ["dep:openraft", "dep:bitcode", "dep:serde", "tokio"]
 
 [dependencies]
@@ -23,6 +25,8 @@ openraft = { version = "0.9", features = ["serde", "storage-v2"], optional = tru
 bitcode = { version = "0.6", features = ["serde"], optional = true }
 serde = { version = "1", optional = true }
 tokio-uring = { version = "0.5", optional = true }
+zstd = { version = "0.13", optional = true, default-features = false }
+crossbeam-channel = { version = "0.5", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

@@ -70,6 +70,11 @@ mod uring;
 #[cfg(feature = "io-uring")]
 pub use uring::UringRaftWal;
 
+#[cfg(feature = "io-uring-bridge")]
+mod bridge;
+#[cfg(feature = "io-uring-bridge")]
+pub use bridge::BridgedUringWal;
+
 #[cfg(feature = "std")]
 pub mod impls;
 

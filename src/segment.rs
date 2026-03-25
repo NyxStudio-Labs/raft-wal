@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Default maximum segment size before rotation (64 MB).
-pub(crate) const DEFAULT_MAX_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+/// Default maximum segment size before rotation (16 MB).
+pub(crate) const DEFAULT_MAX_SEGMENT_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SegmentMeta {

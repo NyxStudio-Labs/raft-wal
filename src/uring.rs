@@ -9,7 +9,7 @@ mod inner {
     use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
     use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
     use crate::state::LogState;
-    use crate::wire::segment_header;
+    use crate::wire::active_segment_header;
     use crate::Result;
 
     const FLUSH_THRESHOLD: usize = 64 * 1024;
@@ -92,7 +92,7 @@ mod inner {
                 .open(&active_path)
                 .await?;
             let active_bytes = if is_new {
-                let hdr = segment_header();
+                let hdr = active_segment_header();
                 let hdr_len = hdr.len();
                 let (res, _) = wal_file.write_all_at(hdr.to_vec(), 0).await;
                 res?;
@@ -324,13 +324,25 @@ mod inner {
         async fn flush_buf(&mut self) -> Result<()> {
             if !self.disk_buf.is_empty() {
                 let offset = self.flushed_bytes;
-                let buf = std::mem::take(&mut self.disk_buf);
-                let len = buf.len();
-                let (res, returned_buf) = self.wal_file.write_all_at(buf, offset).await;
-                res?;
-                self.flushed_bytes += len as u64;
-                self.disk_buf = returned_buf;
-                self.disk_buf.clear();
+                #[cfg(feature = "zstd")]
+                {
+                    let compressed = crate::wire::compress_block(&self.disk_buf);
+                    let len = compressed.len();
+                    let (res, _) = self.wal_file.write_all_at(compressed, offset).await;
+                    res?;
+                    self.flushed_bytes += len as u64;
+                    self.disk_buf.clear();
+                }
+                #[cfg(not(feature = "zstd"))]
+                {
+                    let buf = std::mem::take(&mut self.disk_buf);
+                    let len = buf.len();
+                    let (res, returned_buf) = self.wal_file.write_all_at(buf, offset).await;
+                    res?;
+                    self.flushed_bytes += len as u64;
+                    self.disk_buf = returned_buf;
+                    self.disk_buf.clear();
+                }
             }
             Ok(())
         }
@@ -360,7 +372,7 @@ mod inner {
                 .await?;
 
             // Write version header to new segment
-            let hdr = segment_header();
+            let hdr = active_segment_header();
             let hdr_len = hdr.len();
             let (res, _) = new_file.write_all_at(hdr.to_vec(), 0).await;
             res?;

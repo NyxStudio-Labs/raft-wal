@@ -6,7 +6,7 @@ use ::tokio::io::AsyncWriteExt;
 
 use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
 use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
-use crate::wire::segment_header;
+use crate::wire::active_segment_header;
 use crate::state::LogState;
 use crate::Result;
 
@@ -108,7 +108,7 @@ impl AsyncRaftWal {
             .await?;
         let active_bytes = if is_new {
             // Write version header to new segment
-            let hdr = segment_header();
+            let hdr = active_segment_header();
             wal_file.write_all(&hdr).await?;
             wal_file.flush().await?;
             hdr.len()
@@ -349,7 +349,15 @@ impl AsyncRaftWal {
 
     async fn flush_buf(&mut self) -> Result<()> {
         if !self.disk_buf.is_empty() {
-            self.wal_file.write_all(&self.disk_buf).await?;
+            #[cfg(feature = "zstd")]
+            {
+                let compressed = crate::wire::compress_block(&self.disk_buf);
+                self.wal_file.write_all(&compressed).await?;
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                self.wal_file.write_all(&self.disk_buf).await?;
+            }
             self.disk_buf.clear();
         }
         Ok(())
@@ -373,7 +381,7 @@ impl AsyncRaftWal {
             .await?;
 
         // Write version header to new segment
-        let hdr = segment_header();
+        let hdr = active_segment_header();
         self.wal_file.write_all(&hdr).await?;
         self.wal_file.flush().await?;
 

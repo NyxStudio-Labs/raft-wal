@@ -163,8 +163,15 @@ async fn corrupt_crc_recovery() {
     }
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
-        assert_eq!(wal.get(1), Some(b"good".as_slice()));
-        assert!(wal.get(2).is_none());
+        // With zstd: corrupted compressed block → entire block lost.
+        // Without zstd: CRC stops at corruption → only first entry survives.
+        #[cfg(feature = "zstd")]
+        assert!(wal.is_empty());
+        #[cfg(not(feature = "zstd"))]
+        {
+            assert_eq!(wal.get(1), Some(b"good".as_slice()));
+            assert!(wal.get(2).is_none());
+        }
     }
 }
 

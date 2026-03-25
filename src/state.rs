@@ -43,7 +43,7 @@ impl LogState {
             base_index: 0,
             cache_start_index: 0,
             meta: BTreeMap::new(),
-            max_cache_entries: usize::MAX,
+            max_cache_entries: 1024,
         }
     }
 

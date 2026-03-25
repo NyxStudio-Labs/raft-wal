@@ -27,13 +27,16 @@ pub const ENTRY_HEADER_SIZE: usize = 4 + 8 + 4;
 /// Magic bytes at the start of a versioned segment file.
 pub const SEGMENT_MAGIC: [u8; 4] = *b"RWAL";
 
-/// Current segment format version.
+/// Segment format version for uncompressed entries.
 pub const SEGMENT_VERSION: u8 = 1;
+
+/// Segment format version for zstd-compressed blocks.
+pub const SEGMENT_VERSION_COMPRESSED: u8 = 2;
 
 /// Total segment header size: 4 (magic) + 1 (version) = 5 bytes.
 pub const SEGMENT_HEADER_SIZE: usize = 5;
 
-/// Returns the segment header bytes for the current version.
+/// Returns the segment header bytes for uncompressed (v1) segments.
 #[must_use]
 pub fn segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
     [
@@ -43,6 +46,90 @@ pub fn segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
         SEGMENT_MAGIC[3],
         SEGMENT_VERSION,
     ]
+}
+
+/// Returns the segment header bytes for zstd-compressed (v2) segments.
+#[cfg(feature = "zstd")]
+#[must_use]
+pub fn segment_header_v2() -> [u8; SEGMENT_HEADER_SIZE] {
+    [
+        SEGMENT_MAGIC[0],
+        SEGMENT_MAGIC[1],
+        SEGMENT_MAGIC[2],
+        SEGMENT_MAGIC[3],
+        SEGMENT_VERSION_COMPRESSED,
+    ]
+}
+
+/// Returns the appropriate segment header for the active feature set.
+///
+/// With `zstd` feature enabled, returns v2 header; otherwise v1.
+#[must_use]
+pub fn active_segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
+    #[cfg(feature = "zstd")]
+    { segment_header_v2() }
+    #[cfg(not(feature = "zstd"))]
+    { segment_header() }
+}
+
+/// Compresses raw entry bytes into a length-prefixed zstd block.
+///
+/// Output format: `[u32 compressed_len LE][zstd compressed data]`
+///
+/// # Panics
+///
+/// Panics if zstd compression fails, which should not happen for valid input.
+#[cfg(feature = "zstd")]
+#[must_use]
+pub fn compress_block(raw_entries: &[u8]) -> Vec<u8> {
+    let compressed = zstd::bulk::compress(raw_entries, 3)
+        .expect("zstd compression should not fail");
+    #[allow(clippy::cast_possible_truncation)]
+    let len = compressed.len() as u32;
+    let mut out = Vec::with_capacity(4 + compressed.len());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&compressed);
+    out
+}
+
+/// Decompresses all zstd blocks from v2 segment data (after header).
+///
+/// Each block is: `[u32 compressed_len LE][zstd compressed data]`
+///
+/// Returns the concatenated decompressed entry bytes, or an empty `Vec`
+/// if any block fails to decompress (graceful degradation).
+///
+/// When compiled without the `zstd` feature, always returns an empty `Vec`
+/// (v2 segments cannot be read without zstd).
+#[must_use]
+pub fn decompress_blocks(data: &[u8]) -> Vec<u8> {
+    #[cfg(not(feature = "zstd"))]
+    {
+        let _ = data;
+        Vec::new()
+    }
+    #[cfg(feature = "zstd")]
+    {
+        let mut result = Vec::new();
+        let mut pos = 0;
+        while pos + 4 <= data.len() {
+            #[allow(clippy::cast_possible_truncation)]
+            let block_len = u32::from_le_bytes(
+                data[pos..pos + 4].try_into().expect("4 bytes"),
+            ) as usize;
+            pos += 4;
+            if pos + block_len > data.len() {
+                break;
+            }
+            let block_data = &data[pos..pos + block_len];
+            match zstd::bulk::decompress(block_data, 64 * 1024 * 1024) {
+                Ok(decompressed) => result.extend_from_slice(&decompressed),
+                Err(_) => return Vec::new(),
+            }
+            pos += block_len;
+        }
+        result
+    }
 }
 
 /// Detects whether `data` starts with a segment header and strips it.

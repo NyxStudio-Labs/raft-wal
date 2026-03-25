@@ -324,20 +324,26 @@ fn bug10_segments_have_version_header() {
 
     // Verify segment header is present
     assert_eq!(&data[..4], b"RWAL", "segment should start with RWAL magic");
+    #[cfg(feature = "zstd")]
+    assert_eq!(data[4], 2, "segment version should be 2 (zstd)");
+    #[cfg(not(feature = "zstd"))]
     assert_eq!(data[4], 1, "segment version should be 1");
 
     // strip_segment_header correctly separates header from entries
-    let (version, entry_data) = raft_wal::wire::strip_segment_header(&data);
+    let (version, _entry_data) = raft_wal::wire::strip_segment_header(&data);
+    #[cfg(feature = "zstd")]
+    assert_eq!(version, 2);
+    #[cfg(not(feature = "zstd"))]
     assert_eq!(version, 1);
 
-    let entries = raft_wal::wire::parse_entries(entry_data);
+    // Verify entries can be recovered via parse_segment (handles v1 and v2)
+    let entries: Vec<_> = {
+        let wal = open(dir.path());
+        wal.iter().map(|e| (e.index, e.data.to_vec())).collect()
+    };
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].0, 1);
     assert_eq!(entries[0].1, b"test");
-
-    // Legacy segments (no header) are still parseable
-    let legacy_entries = raft_wal::wire::parse_entries(entry_data);
-    assert_eq!(legacy_entries.len(), 1, "legacy format still works");
 }
 
 // ========================================================================

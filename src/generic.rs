@@ -8,10 +8,10 @@ use alloc::vec::Vec;
 use crate::state::LogState;
 use crate::storage::WalStorage;
 use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
-use crate::wire::{segment_header, strip_segment_header};
+use crate::wire::active_segment_header;
 
-/// Default maximum segment size before rotation (64 MB).
-const DEFAULT_MAX_SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+/// Default maximum segment size before rotation (16 MB).
+const DEFAULT_MAX_SEGMENT_SIZE: usize = 16 * 1024 * 1024;
 
 /// Threshold for flushing the write buffer.
 const FLUSH_THRESHOLD: usize = 64 * 1024;
@@ -122,7 +122,7 @@ impl<S: WalStorage> GenericRaftWal<S> {
             { storage.file_size(&active_name)? as usize }
         } else {
             // Create with version header
-            let hdr = segment_header();
+            let hdr = active_segment_header();
             storage.write_file(&active_name, &hdr)?;
             hdr.len()
         };
@@ -377,7 +377,15 @@ impl<S: WalStorage> GenericRaftWal<S> {
 
     fn flush_buf(&mut self) -> Result<(), S::Error> {
         if !self.disk_buf.is_empty() {
-            self.storage.append_file(&self.active_name, &self.disk_buf)?;
+            #[cfg(feature = "zstd")]
+            {
+                let compressed = crate::wire::compress_block(&self.disk_buf);
+                self.storage.append_file(&self.active_name, &compressed)?;
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                self.storage.append_file(&self.active_name, &self.disk_buf)?;
+            }
             self.disk_buf.clear();
         }
         Ok(())
@@ -409,7 +417,7 @@ impl<S: WalStorage> GenericRaftWal<S> {
         let next_index = self.active_last_index + 1;
         let new_name = segment_name(next_index);
         // Create the new segment file with version header
-        let hdr = segment_header();
+        let hdr = active_segment_header();
         self.storage.write_file(&new_name, &hdr)?;
 
         self.sealed.push(sealed);
@@ -480,35 +488,28 @@ impl<S: WalStorage> GenericRaftWal<S> {
 
     fn read_from_disk(&self, index: u64) -> Result<Option<Vec<u8>>, S::Error> {
         // Check sealed segments in reverse (most recent first).
-        // Use offset map for O(1) lookup when available, falling back to
-        // full-segment read + linear scan for legacy segments.
         for seg in self.sealed.iter().rev() {
             if index >= seg.first_index && index <= seg.last_index {
-                // Try offset map first (binary search via read_file_range)
-                if let Ok(pos) = seg
-                    .entry_offsets
-                    .binary_search_by_key(&index, |(idx, _, _)| *idx)
-                {
-                    let (_, offset, size) = &seg.entry_offsets[pos];
-                    let data = self.storage.read_file_range(&seg.name, *offset, *size)?;
-                    let entries = crate::wire::parse_entries(&data);
-                    if let Some((_idx, payload)) = entries.into_iter().next() {
+                // Read and parse the full segment (handles v0/v1/v2)
+                let raw = self.storage.read_file(&seg.name)?;
+                let (_ver, _hdr_len, entries) = parse_segment(&raw);
+                for (idx, payload, _, _) in entries {
+                    if idx == index {
                         return Ok(Some(payload));
                     }
                 }
-                // Fallback: read entire segment (legacy or offset map miss)
-                let raw = self.storage.read_file(&seg.name)?;
-                let (_ver, entry_data) = strip_segment_header(&raw);
-                return Ok(crate::wire::find_entry_in_data(entry_data, index));
+                return Ok(None);
             }
         }
         // Check active segment
         if index >= self.active_first_index && index <= self.active_last_index {
             if self.storage.file_exists(&self.active_name) {
                 let raw = self.storage.read_file(&self.active_name)?;
-                let (_ver, entry_data) = strip_segment_header(&raw);
-                if let Some(entry) = crate::wire::find_entry_in_data(entry_data, index) {
-                    return Ok(Some(entry));
+                let (_ver, _hdr_len, entries) = parse_segment(&raw);
+                for (idx, payload, _, _) in entries {
+                    if idx == index {
+                        return Ok(Some(payload));
+                    }
                 }
             }
             // Also search the in-memory disk_buf that hasn't been flushed
