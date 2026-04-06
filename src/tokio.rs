@@ -6,8 +6,8 @@ use ::tokio::io::AsyncWriteExt;
 
 use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
 use crate::segment::{list_segments, segment_path, SegmentMeta, DEFAULT_MAX_SEGMENT_SIZE};
-use crate::wire::active_segment_header;
 use crate::state::LogState;
+use crate::wire::active_segment_header;
 use crate::Result;
 
 const FLUSH_THRESHOLD: usize = 64 * 1024;
@@ -62,7 +62,8 @@ impl AsyncRaftWal {
 
         // Recover segments — read + parse + CRC verify concurrently
         let seg_paths = list_segments(dir);
-        let mut handles: Vec<::tokio::task::JoinHandle<SegResult>> = Vec::with_capacity(seg_paths.len());
+        let mut handles: Vec<::tokio::task::JoinHandle<SegResult>> =
+            Vec::with_capacity(seg_paths.len());
         for path in seg_paths {
             handles.push(::tokio::spawn(async move {
                 let raw = ::tokio::fs::read(&path).await?;
@@ -115,7 +116,9 @@ impl AsyncRaftWal {
         } else {
             // File sizes are always well within usize range for WAL segments
             #[allow(clippy::cast_possible_truncation)]
-            { wal_file.metadata().await?.len() as usize }
+            {
+                wal_file.metadata().await?.len() as usize
+            }
         };
 
         Ok(Self {
@@ -218,8 +221,7 @@ impl AsyncRaftWal {
         for seg in &mut self.sealed {
             if seg.first_index <= up_to_inclusive && seg.last_index > up_to_inclusive {
                 let raw = ::tokio::fs::read(&seg.path).await?;
-                let (buf, _offsets) =
-                    rewrite_segment_keeping(&raw, |idx| idx > up_to_inclusive);
+                let (buf, _offsets) = rewrite_segment_keeping(&raw, |idx| idx > up_to_inclusive);
                 let tmp = self.dir_path.join("compact_rewrite.tmp");
                 ::tokio::fs::write(&tmp, &buf).await?;
                 {
@@ -271,8 +273,7 @@ impl AsyncRaftWal {
         for seg in &mut self.sealed {
             if seg.last_index >= from_inclusive && seg.first_index < from_inclusive {
                 let raw = ::tokio::fs::read(&seg.path).await?;
-                let (buf, _offsets) =
-                    rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
+                let (buf, _offsets) = rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
                 let tmp = self.dir_path.join("truncate_rewrite.tmp");
                 ::tokio::fs::write(&tmp, &buf).await?;
                 {
@@ -408,8 +409,7 @@ impl AsyncRaftWal {
         };
 
         let sealed_last = self.sealed.last().map(|s| s.last_index);
-        let (first_active, buf) =
-            build_active_rewrite(&self.state, sealed_last, &existing_on_disk);
+        let (first_active, buf) = build_active_rewrite(&self.state, sealed_last, &existing_on_disk);
 
         let new_path = segment_path(&self.dir_path, first_active);
         let tmp_path = self.dir_path.join("active.tmp");

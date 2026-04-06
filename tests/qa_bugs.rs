@@ -73,8 +73,14 @@ fn bug01_eviction_memory_reduced_and_disk_fallback() {
     );
 
     // Evicted entries return None from cache
-    assert!(wal.get_cached(1).is_none(), "evicted entry should not be in cache");
-    assert!(wal.get_cached(n).is_some(), "recent entry should still be cached");
+    assert!(
+        wal.get_cached(1).is_none(),
+        "evicted entry should not be in cache"
+    );
+    assert!(
+        wal.get_cached(n).is_some(),
+        "recent entry should still be cached"
+    );
 
     // len() reports the full count (evicted entries still in WAL)
     assert_eq!(wal.len(), n as usize);
@@ -211,7 +217,9 @@ fn bug03_compact_propagates_remove_file_error() {
 fn default_read_file_range_fallback() {
     // FailOnRemoveStorage uses the DEFAULT read_file_range (not overridden)
     let mut storage = FailOnRemoveStorage::new();
-    storage.write_file("test.dat", b"hello world").expect("write");
+    storage
+        .write_file("test.dat", b"hello world")
+        .expect("write");
 
     let result = storage.read_file_range("test.dat", 6, 5).expect("range");
     assert_eq!(&result, b"world");
@@ -239,7 +247,8 @@ fn bug04_disk_fallback_after_eviction() {
 
     let entry_count = 200u64;
     for i in 1..=entry_count {
-        wal.append(i, format!("payload-{i}").as_bytes()).expect("append");
+        wal.append(i, format!("payload-{i}").as_bytes())
+            .expect("append");
     }
     wal.sync().expect("sync");
 

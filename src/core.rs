@@ -44,7 +44,11 @@ pub(crate) fn rewrite_segment_keeping(
     // but we still record them for API consistency.
     for (idx, payload, _, _) in &entries {
         if keep(*idx) {
-            offsets.push((*idx, hdr.len() + raw_buf.len(), ENTRY_HEADER_SIZE + payload.len()));
+            offsets.push((
+                *idx,
+                hdr.len() + raw_buf.len(),
+                ENTRY_HEADER_SIZE + payload.len(),
+            ));
             serialize_entry(&mut raw_buf, *idx, payload);
         }
     }
@@ -78,8 +82,7 @@ pub(crate) fn build_active_rewrite(
     let first_active = if state.is_empty() {
         1
     } else {
-        sealed_last_index
-            .map_or(state.base_index, |i| i + 1)
+        sealed_last_index.map_or(state.base_index, |i| i + 1)
     };
 
     let hdr = active_segment_header();
@@ -89,9 +92,8 @@ pub(crate) fn build_active_rewrite(
         for idx in first_active..=last {
             if let Some(data) = state.get(idx) {
                 serialize_entry(&mut raw_entries, idx, data);
-            } else if let Some((_, payload, _, _)) = existing_disk_entries
-                .iter()
-                .find(|(i, _, _, _)| *i == idx)
+            } else if let Some((_, payload, _, _)) =
+                existing_disk_entries.iter().find(|(i, _, _, _)| *i == idx)
             {
                 serialize_entry(&mut raw_entries, idx, payload);
             }
@@ -143,7 +145,10 @@ mod tests {
     /// handling both v1 and v2 (compressed) formats transparently.
     fn parse_output(buf: &[u8]) -> Vec<(u64, Vec<u8>)> {
         let (_ver, _hdr_len, entries) = parse_segment(buf);
-        entries.into_iter().map(|(idx, payload, _, _)| (idx, payload)).collect()
+        entries
+            .into_iter()
+            .map(|(idx, payload, _, _)| (idx, payload))
+            .collect()
     }
 
     fn make_segment(entries: &[(u64, &[u8])]) -> Vec<u8> {

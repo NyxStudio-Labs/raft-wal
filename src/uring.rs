@@ -149,10 +149,7 @@ mod inner {
         /// # Errors
         ///
         /// Returns an error if the underlying I/O operations fail.
-        pub async fn append_batch<V: AsRef<[u8]>>(
-            &mut self,
-            entries: &[(u64, V)],
-        ) -> Result<()> {
+        pub async fn append_batch<V: AsRef<[u8]>>(&mut self, entries: &[(u64, V)]) -> Result<()> {
             append_batch_to_buf!(self, entries);
             if let Some((idx, _)) = entries.last() {
                 self.active_meta.last_index = *idx;
@@ -257,8 +254,7 @@ mod inner {
             for seg in &mut self.sealed {
                 if seg.last_index >= from_inclusive && seg.first_index < from_inclusive {
                     let raw = std::fs::read(&seg.path)?;
-                    let (buf, _offsets) =
-                        rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
+                    let (buf, _offsets) = rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
                     let tmp = self.dir_path.join("truncate_rewrite.tmp");
                     std::fs::write(&tmp, &buf)?;
                     {
@@ -347,10 +343,7 @@ mod inner {
             Ok(())
         }
 
-        async fn replace_wal_file(
-            &mut self,
-            new_file: tokio_uring::fs::File,
-        ) -> Result<()> {
+        async fn replace_wal_file(&mut self, new_file: tokio_uring::fs::File) -> Result<()> {
             let old = std::mem::replace(&mut self.wal_file, new_file);
             old.close().await?;
             Ok(())

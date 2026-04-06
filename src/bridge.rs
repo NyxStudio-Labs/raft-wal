@@ -113,8 +113,7 @@ mod inner {
         /// thread fails to start.
         pub async fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
             let dir = data_dir.as_ref().to_path_buf();
-            let (tx, rx): (Sender<Request>, Receiver<Request>) =
-                crossbeam_channel::unbounded();
+            let (tx, rx): (Sender<Request>, Receiver<Request>) = crossbeam_channel::unbounded();
 
             // Use a oneshot to receive the open result from the uring thread
             let (open_tx, open_rx) = ::tokio::sync::oneshot::channel::<Result<()>>();
@@ -124,9 +123,11 @@ mod inner {
                 .spawn(move || {
                     uring_thread_main(dir, rx, open_tx);
                 })
-                .map_err(|e| crate::WalError::Io(
-                    std::io::Error::other(format!("failed to spawn uring thread: {e}")),
-                ))?;
+                .map_err(|e| {
+                    crate::WalError::Io(std::io::Error::other(format!(
+                        "failed to spawn uring thread: {e}"
+                    )))
+                })?;
 
             // Wait for the WAL to be opened on the uring thread
             let result = open_rx.await.map_err(|_| {

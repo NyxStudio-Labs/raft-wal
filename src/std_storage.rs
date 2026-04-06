@@ -105,7 +105,12 @@ impl WalStorage for StdStorage {
         self.path(name).exists()
     }
 
-    fn read_file_range(&self, name: &str, offset: usize, len: usize) -> Result<Vec<u8>, Self::Error> {
+    fn read_file_range(
+        &self,
+        name: &str,
+        offset: usize,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = fs::File::open(self.path(name))?;
         #[allow(clippy::cast_possible_truncation)]

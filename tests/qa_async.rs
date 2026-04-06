@@ -155,7 +155,11 @@ async fn corrupt_crc_recovery() {
     let segs = find_segments(&path);
     let last_seg = &segs[segs.len() - 1];
     let mut data = fs::read(last_seg).expect("read seg");
-    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
+    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" {
+        5
+    } else {
+        0
+    };
     let second_entry_offset = seg_hdr + 20;
     if data.len() > second_entry_offset {
         data[second_entry_offset] ^= 0xFF;
@@ -239,8 +243,14 @@ async fn compact_partial_segment_recovery() {
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.first_index(), Some(26));
-        assert!(wal.get(25).is_none(), "compacted entry should not resurrect");
-        assert!(wal.get(26).is_some(), "entry after compact boundary should exist");
+        assert!(
+            wal.get(25).is_none(),
+            "compacted entry should not resurrect"
+        );
+        assert!(
+            wal.get(26).is_some(),
+            "entry after compact boundary should exist"
+        );
     }
 }
 
@@ -260,8 +270,14 @@ async fn truncate_partial_segment_recovery() {
     {
         let wal = AsyncRaftWal::open(&path).await.expect("reopen");
         assert_eq!(wal.last_index(), Some(24));
-        assert!(wal.get(25).is_none(), "truncated entry should not resurrect");
-        assert!(wal.get(24).is_some(), "entry before truncate boundary should exist");
+        assert!(
+            wal.get(25).is_none(),
+            "truncated entry should not resurrect"
+        );
+        assert!(
+            wal.get(24).is_some(),
+            "entry before truncate boundary should exist"
+        );
     }
 }
 

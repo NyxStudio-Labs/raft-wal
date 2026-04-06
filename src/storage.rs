@@ -85,7 +85,12 @@ pub trait WalStorage {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read.
-    fn read_file_range(&self, name: &str, offset: usize, len: usize) -> Result<Vec<u8>, Self::Error> {
+    fn read_file_range(
+        &self,
+        name: &str,
+        offset: usize,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
         let data = self.read_file(name)?;
         let end = (offset + len).min(data.len());
         let start = offset.min(end);

@@ -126,7 +126,6 @@ impl LogState {
         self.evict_if_needed_until(u64::MAX);
     }
 
-
     pub fn get(&self, index: u64) -> Option<&[u8]> {
         if index < self.base_index {
             return None;
@@ -142,7 +141,6 @@ impl LogState {
             }
         })
     }
-
 
     pub fn first_index(&self) -> Option<u64> {
         if self.entries.is_empty() {

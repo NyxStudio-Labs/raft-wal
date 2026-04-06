@@ -507,7 +507,11 @@ fn rq09_corrupt_crc_recovery() {
     assert!(!seg_files.is_empty());
     let last_seg = &seg_files[seg_files.len() - 1];
     let mut data = fs::read(last_seg).unwrap();
-    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" { 5 } else { 0 };
+    let seg_hdr = if data.len() >= 4 && &data[..4] == b"RWAL" {
+        5
+    } else {
+        0
+    };
     // Corrupt a byte after the header
     let corrupt_offset = seg_hdr + 20;
     if data.len() > corrupt_offset {
@@ -934,7 +938,10 @@ fn compact_partial_segment_rewrite() {
     drop(wal);
     let wal = open(dir.path());
     assert_eq!(wal.first_index(), Some(26));
-    assert!(wal.get(25).is_none(), "compacted entry should not resurrect");
+    assert!(
+        wal.get(25).is_none(),
+        "compacted entry should not resurrect"
+    );
     assert_eq!(wal.get(26).as_deref(), Some(b"v26".as_slice()));
     assert_eq!(wal.get(50).as_deref(), Some(b"v50".as_slice()));
 }
@@ -957,7 +964,10 @@ fn truncate_partial_segment_rewrite() {
     drop(wal);
     let wal = open(dir.path());
     assert_eq!(wal.last_index(), Some(24));
-    assert!(wal.get(25).is_none(), "truncated entry should not resurrect");
+    assert!(
+        wal.get(25).is_none(),
+        "truncated entry should not resurrect"
+    );
     assert_eq!(wal.get(24).as_deref(), Some(b"v24".as_slice()));
 }
 
@@ -1051,7 +1061,11 @@ fn zero_length_entry_survives_eviction() {
 
     // Disk fallback for zero-length entries
     let entry = wal.get(1);
-    assert_eq!(entry.as_deref(), Some(b"".as_slice()), "zero-length entry should survive eviction via disk");
+    assert_eq!(
+        entry.as_deref(),
+        Some(b"".as_slice()),
+        "zero-length entry should survive eviction via disk"
+    );
 }
 
 /// Default read_file_range implementation (on WalStorage trait).
@@ -1070,4 +1084,3 @@ fn default_read_file_range() {
     let result = storage.read_file_range("test.bin", 9, 100);
     assert!(result.is_err(), "reading past end should fail");
 }
-

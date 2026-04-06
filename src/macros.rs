@@ -25,10 +25,7 @@ macro_rules! impl_wal_accessors {
 
         /// Returns entries within the given index range as owned pairs.
         #[must_use]
-        pub fn read_range<R: core::ops::RangeBounds<u64>>(
-            &self,
-            range: R,
-        ) -> Vec<(u64, Vec<u8>)> {
+        pub fn read_range<R: core::ops::RangeBounds<u64>>(&self, range: R) -> Vec<(u64, Vec<u8>)> {
             self.state
                 .iter_range(range)
                 .map(|e| (e.index, e.data.to_vec()))

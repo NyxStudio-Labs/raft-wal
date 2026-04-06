@@ -67,9 +67,13 @@ pub fn segment_header_v2() -> [u8; SEGMENT_HEADER_SIZE] {
 #[must_use]
 pub fn active_segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
     #[cfg(feature = "zstd")]
-    { segment_header_v2() }
+    {
+        segment_header_v2()
+    }
     #[cfg(not(feature = "zstd"))]
-    { segment_header() }
+    {
+        segment_header()
+    }
 }
 
 /// Compresses raw entry bytes into a length-prefixed zstd block.
@@ -82,8 +86,8 @@ pub fn active_segment_header() -> [u8; SEGMENT_HEADER_SIZE] {
 #[cfg(feature = "zstd")]
 #[must_use]
 pub fn compress_block(raw_entries: &[u8]) -> Vec<u8> {
-    let compressed = zstd::bulk::compress(raw_entries, 3)
-        .expect("zstd compression should not fail");
+    let compressed =
+        zstd::bulk::compress(raw_entries, 3).expect("zstd compression should not fail");
     #[allow(clippy::cast_possible_truncation)]
     let len = compressed.len() as u32;
     let mut out = Vec::with_capacity(4 + compressed.len());
@@ -114,9 +118,8 @@ pub fn decompress_blocks(data: &[u8]) -> Vec<u8> {
         let mut pos = 0;
         while pos + 4 <= data.len() {
             #[allow(clippy::cast_possible_truncation)]
-            let block_len = u32::from_le_bytes(
-                data[pos..pos + 4].try_into().expect("4 bytes"),
-            ) as usize;
+            let block_len =
+                u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4 bytes")) as usize;
             pos += 4;
             if pos + block_len > data.len() {
                 break;

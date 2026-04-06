@@ -155,7 +155,10 @@ impl RaftWal {
         if let Some(data) = self.get_cached(index) {
             return Some(std::borrow::Cow::Borrowed(data));
         }
-        self.get_or_read(index).ok().flatten().map(std::borrow::Cow::Owned)
+        self.get_or_read(index)
+            .ok()
+            .flatten()
+            .map(std::borrow::Cow::Owned)
     }
 }
 

@@ -5,9 +5,9 @@ use alloc::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
 use crate::state::LogState;
 use crate::storage::WalStorage;
-use crate::core::{build_active_rewrite, parse_segment, rewrite_segment_keeping};
 use crate::wire::active_segment_header;
 
 /// Default maximum segment size before rotation (16 MB).
@@ -119,7 +119,9 @@ impl<S: WalStorage> GenericRaftWal<S> {
         let active_bytes = if storage.file_exists(&active_name) {
             // File sizes are always well within usize range for WAL segments
             #[allow(clippy::cast_possible_truncation)]
-            { storage.file_size(&active_name)? as usize }
+            {
+                storage.file_size(&active_name)? as usize
+            }
         } else {
             // Create with version header
             let hdr = active_segment_header();
@@ -250,8 +252,7 @@ impl<S: WalStorage> GenericRaftWal<S> {
         for seg in &mut self.sealed {
             if seg.first_index <= up_to_inclusive && seg.last_index > up_to_inclusive {
                 let raw = self.storage.read_file(&seg.name)?;
-                let (buf, new_offsets) =
-                    rewrite_segment_keeping(&raw, |idx| idx > up_to_inclusive);
+                let (buf, new_offsets) = rewrite_segment_keeping(&raw, |idx| idx > up_to_inclusive);
                 let tmp = "compact_rewrite.tmp";
                 self.storage.write_file(tmp, &buf)?;
                 self.storage.sync_file(tmp)?;
@@ -302,8 +303,7 @@ impl<S: WalStorage> GenericRaftWal<S> {
         for seg in &mut self.sealed {
             if seg.last_index >= from_inclusive && seg.first_index < from_inclusive {
                 let raw = self.storage.read_file(&seg.name)?;
-                let (buf, new_offsets) =
-                    rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
+                let (buf, new_offsets) = rewrite_segment_keeping(&raw, |idx| idx < from_inclusive);
                 let tmp = "truncate_rewrite.tmp";
                 self.storage.write_file(tmp, &buf)?;
                 self.storage.sync_file(tmp)?;
@@ -384,7 +384,8 @@ impl<S: WalStorage> GenericRaftWal<S> {
             }
             #[cfg(not(feature = "zstd"))]
             {
-                self.storage.append_file(&self.active_name, &self.disk_buf)?;
+                self.storage
+                    .append_file(&self.active_name, &self.disk_buf)?;
             }
             self.disk_buf.clear();
         }
@@ -450,8 +451,7 @@ impl<S: WalStorage> GenericRaftWal<S> {
         }
 
         let sealed_last = self.sealed.last().map(|s| s.last_index);
-        let (first_active, buf) =
-            build_active_rewrite(&self.state, sealed_last, &existing_on_disk);
+        let (first_active, buf) = build_active_rewrite(&self.state, sealed_last, &existing_on_disk);
 
         let new_name = segment_name(first_active);
         let tmp_name = "active.tmp";
