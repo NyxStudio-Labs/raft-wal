@@ -2,15 +2,24 @@
 //!
 //! Enable with `features = ["openraft-storage"]`.
 //! Requires openraft 0.9 with `storage-v2` + `serde` features.
+//!
+//! # Shared-state design
+//!
+//! `OpenRaftLogStorage` wraps `AsyncRaftWal` in `Arc<tokio::sync::RwLock<_>>`
+//! so that `get_log_reader()` returns a cheap clone sharing the same in-memory
+//! state. This avoids the bug where a reader opened from disk cannot see
+//! entries that the writer has appended but not yet flushed.
 
 use std::fmt::Debug;
 use std::ops::RangeBounds;
+use std::sync::Arc;
 
 use openraft::storage::LogFlushed;
 use openraft::storage::RaftLogStorage;
 use openraft::{
     LogId, LogState, OptionalSend, RaftLogId, RaftLogReader, RaftTypeConfig, StorageError, Vote,
 };
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use crate::AsyncRaftWal;
 
@@ -45,20 +54,31 @@ fn to_storage_err<NID: openraft::NodeId>(e: crate::WalError) -> StorageError<NID
 ///
 /// `C::Entry`, `Vote<C::NodeId>`, and `LogId<C::NodeId>` must implement
 /// `serde::Serialize + serde::DeserializeOwned`.
+///
+/// The inner WAL is wrapped in `Arc<RwLock<AsyncRaftWal>>`, so cloning this
+/// struct is cheap and all clones share the same in-memory state.
+/// [`get_log_reader`](RaftLogStorage::get_log_reader) returns a clone,
+/// ensuring readers always see the latest appended entries.
 pub struct OpenRaftLogStorage<C: RaftTypeConfig> {
-    wal: AsyncRaftWal,
-    dir_path: std::path::PathBuf,
+    wal: Arc<RwLock<AsyncRaftWal>>,
     _phantom: std::marker::PhantomData<C>,
+}
+
+impl<C: RaftTypeConfig> Clone for OpenRaftLogStorage<C> {
+    fn clone(&self) -> Self {
+        Self {
+            wal: Arc::clone(&self.wal),
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
     /// Creates a new storage backed by the given [`AsyncRaftWal`].
     #[must_use]
     pub fn new(wal: AsyncRaftWal) -> Self {
-        let dir_path = wal.dir_path().to_path_buf();
         Self {
-            wal,
-            dir_path,
+            wal: Arc::new(RwLock::new(wal)),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -72,10 +92,11 @@ impl<C: RaftTypeConfig> OpenRaftLogStorage<C> {
         Ok(Self::new(AsyncRaftWal::open(data_dir).await?))
     }
 
-    /// Returns a mutable reference to the underlying [`AsyncRaftWal`].
-    #[must_use]
-    pub fn wal_mut(&mut self) -> &mut AsyncRaftWal {
-        &mut self.wal
+    /// Returns a write-lock guard to the underlying [`AsyncRaftWal`].
+    ///
+    /// Use this for direct WAL access (e.g. compaction, shutdown).
+    pub async fn wal_mut(&self) -> RwLockWriteGuard<'_, AsyncRaftWal> {
+        self.wal.write().await
     }
 }
 
@@ -90,11 +111,8 @@ where
     where
         RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
     {
-        let entries: Vec<C::Entry> = self
-            .wal
-            .iter_range(range)
-            .filter_map(|e| de(e.data))
-            .collect();
+        let wal = self.wal.read().await;
+        let entries: Vec<C::Entry> = wal.iter_range(range).filter_map(|e| de(e.data)).collect();
         Ok(entries)
     }
 }
@@ -107,11 +125,11 @@ where
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> Result<LogState<C>, StorageError<C::NodeId>> {
-        let purged: Option<LogId<C::NodeId>> = self.wal.get_meta(META_PURGED).and_then(de);
+        let wal = self.wal.read().await;
+        let purged: Option<LogId<C::NodeId>> = wal.get_meta(META_PURGED).and_then(de);
 
-        let last = self.wal.last_index().and_then(|idx| {
-            self.wal
-                .get(idx)
+        let last = wal.last_index().and_then(|idx| {
+            wal.get(idx)
                 .and_then(de::<C::Entry>)
                 .map(|e| e.get_log_id().clone())
         });
@@ -122,27 +140,21 @@ where
         })
     }
 
-    #[allow(clippy::unwrap_used)]
     async fn get_log_reader(&mut self) -> Self::LogReader {
-        // Open a separate read-only WAL instance for snapshot building.
-        // The trait signature does not return Result, so we must panic on
-        // failure. In practice this only fails if the directory was deleted
-        // or permissions changed while the WAL was open.
-        let wal = AsyncRaftWal::open(&self.dir_path)
-            .await
-            .expect("failed to open log reader WAL — directory may have been deleted");
-        OpenRaftLogStorage::new(wal)
+        self.clone()
     }
 
     async fn save_vote(&mut self, vote: &Vote<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
         self.wal
+            .write()
+            .await
             .set_meta(META_VOTE, &ser(vote))
             .await
             .map_err(to_storage_err)
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote<C::NodeId>>, StorageError<C::NodeId>> {
-        Ok(self.wal.get_meta(META_VOTE).and_then(de))
+        Ok(self.wal.read().await.get_meta(META_VOTE).and_then(de))
     }
 
     async fn save_committed(
@@ -152,6 +164,8 @@ where
         match committed {
             Some(log_id) => self
                 .wal
+                .write()
+                .await
                 .set_meta(META_COMMITTED, &ser(&log_id))
                 .await
                 .map_err(to_storage_err),
@@ -162,7 +176,7 @@ where
     async fn read_committed(
         &mut self,
     ) -> Result<Option<LogId<C::NodeId>>, StorageError<C::NodeId>> {
-        Ok(self.wal.get_meta(META_COMMITTED).and_then(de))
+        Ok(self.wal.read().await.get_meta(META_COMMITTED).and_then(de))
     }
 
     async fn append<I>(
@@ -175,34 +189,34 @@ where
         I::IntoIter: OptionalSend,
     {
         use openraft::RaftLogId;
+        let mut wal = self.wal.write().await;
         for entry in entries {
             let index = entry.get_log_id().index;
             let bytes = ser(&entry);
-            self.wal
-                .append(index, &bytes)
-                .await
-                .map_err(to_storage_err)?;
+            wal.append(index, &bytes).await.map_err(to_storage_err)?;
         }
         // Flush + fsync before signaling durability to openraft.
         // Without this, entries may be in the in-memory buffer and lost on crash,
         // even though openraft considers them committed.
-        self.wal.sync().await.map_err(to_storage_err)?;
+        wal.sync().await.map_err(to_storage_err)?;
         callback.log_io_completed(Ok(()));
         Ok(())
     }
 
     async fn truncate(&mut self, log_id: LogId<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
         self.wal
+            .write()
+            .await
             .truncate(log_id.index)
             .await
             .map_err(to_storage_err)
     }
 
     async fn purge(&mut self, log_id: LogId<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
-        self.wal
-            .set_meta(META_PURGED, &ser(&log_id))
+        let mut wal = self.wal.write().await;
+        wal.set_meta(META_PURGED, &ser(&log_id))
             .await
             .map_err(to_storage_err)?;
-        self.wal.compact(log_id.index).await.map_err(to_storage_err)
+        wal.compact(log_id.index).await.map_err(to_storage_err)
     }
 }
